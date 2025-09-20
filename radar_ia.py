@@ -1,5 +1,5 @@
 # Filename: radar_ia.py
-# Versão 2.0 - Conectado com API Real (API-Sports)
+# Versão 2.0 - Conectado com API Real (API-Sports) e Índice de Pressão
 
 import requests
 from fastapi import FastAPI
@@ -17,7 +17,7 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
 API_SPORTS_URL = "https://v3.football.api-sports.io"
 
-# --- Cache Simples para evitar chamadas repetidas ---
+# --- Cache Simples ---
 cache: Dict[str, Dict[str, Any]] = {}
 
 # --- Endpoints ---
@@ -42,7 +42,7 @@ def get_live_games():
                 "game_id": fixture['fixture']['id'],
                 "title": f"{fixture['teams']['home']['name']} vs {fixture['teams']['away']['name']} ({fixture['league']['name']})"
             }
-            for fixture in data
+            for fixture in data if fixture.get('fixture') and fixture.get('teams')
         ], key=lambda x: x['title'])
         
         cache[cache_key] = {'data': live_games, 'expiry': datetime.now() + timedelta(minutes=2)}
@@ -70,14 +70,14 @@ def get_live_stats_for_game(game_id: int):
 
         def get_stat(team_id, stat_name):
             for team_stats in stats_list:
-                if team_stats['team']['id'] == team_id:
-                    for stat in team_stats['statistics']:
-                        if stat['type'] == stat_name:
-                            return stat['value'] if stat['value'] is not None else 0
+                if team_stats.get('team', {}).get('id') == team_id:
+                    for stat in team_stats.get('statistics', []):
+                        if stat.get('type') == stat_name:
+                            return stat.get('value') if stat.get('value') is not None else 0
             return 0
         
-        home_id = teams_data['home']['id']
-        away_id = teams_data['away']['id']
+        home_id = teams_data.get('home', {}).get('id')
+        away_id = teams_data.get('away', {}).get('id')
 
         home_possession = str(get_stat(home_id, "Ball Possession")).replace('%', '')
         away_possession = str(get_stat(away_id, "Ball Possession")).replace('%', '')
