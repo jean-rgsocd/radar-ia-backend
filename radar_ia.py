@@ -13,8 +13,8 @@ app = FastAPI(title="Radar IA - V2.0 Real Time")
 origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# !!! IMPORTANTE: COLOQUE A SUA CHAVE DA API-SPORTS (API-FOOTBALL) AQUI !!!
-API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1" 
+# --- Configuração da API-Sports ---
+API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
 API_SPORTS_URL = "https://v3.football.api-sports.io"
 
 # --- Cache Simples para evitar chamadas repetidas ---
