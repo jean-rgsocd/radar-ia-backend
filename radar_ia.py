@@ -84,36 +84,31 @@ def classify_event(ev):
 
 @app.get("/ligas")
 def ligas():
-    cache_key = "radar_ligas_live"
-    c = _cache_get(cache_key)
-    if c is not None:
-        return c
+    ck = "radar_ligas_live"
+    c = _cache_get(ck)
+    if c is not None: return c
     cfg = API_CFG["football"]
     resp = safe_get(f"{cfg['base']}/fixtures", headers_for("football"), params={"live":"all"})
-    if not resp:
-        return []
+    if not resp: return []
     data = resp.get("response") if isinstance(resp, dict) and "response" in resp else resp
     leagues = {}
     for f in data:
         l = f.get("league") or {}
         leagues[l.get("id")] = {"id": l.get("id"), "name": l.get("name"), "country": l.get("country")}
     out = list(leagues.values())
-    _cache_set(cache_key, out)
+    _cache_set(ck, out)
     return out
 
 @app.get("/jogos-aovivo")
 def jogos_aovivo(league: int = Query(None)):
-    cache_key = f"radar_jogos_live_{league or 'all'}"
-    c = _cache_get(cache_key)
-    if c is not None:
-        return c
+    ck = f"radar_jogos_live_{league or 'all'}"
+    c = _cache_get(ck)
+    if c is not None: return c
     cfg = API_CFG["football"]
     params = {"live":"all"}
-    if league:
-        params["league"] = league
+    if league: params["league"] = league
     resp = safe_get(f"{cfg['base']}/fixtures", headers_for("football"), params=params)
-    if not resp:
-        return []
+    if not resp: return []
     data = resp.get("response") if isinstance(resp, dict) and "response" in resp else resp
     out = []
     for f in data:
@@ -125,45 +120,33 @@ def jogos_aovivo(league: int = Query(None)):
             "fixture": f.get("fixture"),
             "status": f.get("fixture",{}).get("status")
         })
-    _cache_set(cache_key, out)
+    _cache_set(ck, out)
     return out
 
 @app.get("/stats-aovivo/{game_id}")
 def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","nba","nfl"])):
-    cache_key = f"radar_stats_{sport}_{game_id}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
+    ck = f"radar_stats_{sport}_{game_id}"
+    cached = _cache_get(ck)
+    if cached is not None: return cached
     try:
-        cfg = API_CFG[sport]
-        base = cfg["base"]
-        headers = headers_for(sport)
-
+        cfg = API_CFG[sport]; base = cfg["base"]; headers = headers_for(sport)
         if sport == "football":
             fixture_resp = safe_get(f"{base}/fixtures", headers, params={"id": game_id})
-            if not fixture_resp:
-                raise HTTPException(status_code=404, detail="Fixture not found")
+            if not fixture_resp: raise HTTPException(status_code=404, detail="Fixture not found")
             fixture_data = fixture_resp.get("response") if isinstance(fixture_resp, dict) and "response" in fixture_resp else fixture_resp
             fixture = fixture_data[0] if isinstance(fixture_data, list) and fixture_data else (fixture_data if isinstance(fixture_data, dict) else {})
-
             stats_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id, "half":"true"})
             stats_wrapper = stats_resp or {}
-            # parse statistics into map if possible (build simple full home/away)
             full_stats = {"home":{}, "away":{}}
             try:
-                # if response has list per team
                 stats_list = stats_wrapper.get("response") if isinstance(stats_wrapper, dict) and "response" in stats_wrapper else stats_wrapper
-                # if list-of-teams
                 if isinstance(stats_list, list) and len(stats_list)>0:
                     for team_stats in stats_list:
                         team = team_stats.get("team") or {}
                         tid = team.get("id")
-                        side = None
                         home_id = fixture.get("teams",{}).get("home",{}).get("id")
                         away_id = fixture.get("teams",{}).get("away",{}).get("id")
-                        if tid == home_id: side = "home"
-                        elif tid == away_id: side = "away"
-                        else: side = None
+                        side = "home" if tid==home_id else ("away" if tid==away_id else None)
                         stats_entries = team_stats.get("statistics") or []
                         tmp = {}
                         for s in stats_entries:
@@ -178,16 +161,11 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                                 try: v = int(float(v))
                                 except: v = v
                             tmp[k] = v
-                        if side:
-                            full_stats[side].update(tmp)
+                        if side: full_stats[side].update(tmp)
                         else:
-                            # fallback: place under home if empty
-                            if not full_stats["home"]:
-                                full_stats["home"].update(tmp)
-                            else:
-                                full_stats["away"].update(tmp)
+                            if not full_stats["home"]: full_stats["home"].update(tmp)
+                            else: full_stats["away"].update(tmp)
                 else:
-                    # sometimes stats come as dict of stat-> {home:.., away:..}
                     if isinstance(stats_list, dict):
                         for k,v in stats_list.items():
                             if isinstance(v, dict):
@@ -195,13 +173,11 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                                 full_stats["away"][k] = try_int(v.get("away"))
             except Exception as e:
                 print("parse stats error", e)
-
             events_resp = safe_get(f"{base}/fixtures/events", headers, params={"fixture": game_id})
             events = events_resp.get("response") if events_resp and isinstance(events_resp, dict) and "response" in events_resp else (events_resp or [])
-            # enrich events with display_time and category
             processed = []
             for ev in events:
-                ev_proc = {
+                processed.append({
                     "display_time": _format_display_time(ev),
                     "category": classify_event(ev),
                     "type": ev.get("type"),
@@ -210,19 +186,13 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                     "team": ev.get("team",{}).get("name") if ev.get("team") else None,
                     "raw": ev,
                     "_sort": _compute_sort_key(ev)
-                }
-                processed.append(ev_proc)
+                })
             processed.sort(key=lambda x: x["_sort"], reverse=True)
-
-            # derive period stats from events
             home_id = fixture.get("teams",{}).get("home",{}).get("id")
             away_id = fixture.get("teams",{}).get("away",{}).get("id")
             period_agg = events_to_period_stats(events, home_id, away_id)
-
-            # ensure full_stats has keys for mapping
             for side in ("home","away"):
-                if not full_stats.get(side):
-                    full_stats[side] = {}
+                if not full_stats.get(side): full_stats[side] = {}
                 if full_stats[side].get("total_shots") in (None,0):
                     full_stats[side]["total_shots"] = period_agg["full"][side].get("shots",0)
                 if full_stats[side].get("shots_on_goal") in (None,0):
@@ -235,13 +205,32 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                     full_stats[side]["yellow_cards"] = period_agg["full"][side].get("yellow",0)
                 if full_stats[side].get("red_cards") in (None,0):
                     full_stats[side]["red_cards"] = period_agg["full"][side].get("red",0)
-
-            # lineups and players
             lineups_resp = safe_get(f"{base}/fixtures/lineups", headers, params={"fixture": game_id})
             lineups = lineups_resp.get("response") if lineups_resp and isinstance(lineups_resp, dict) and "response" in lineups_resp else (lineups_resp or [])
             players_resp = safe_get(f"{base}/fixtures/players", headers, params={"fixture": game_id})
             players = players_resp.get("response") if players_resp and isinstance(players_resp, dict) and "response" in players_resp else (players_resp or [])
-
+            estimated_extra = None
+            try:
+                elapsed = fixture.get("fixture",{}).get("status",{}).get("elapsed") or fixture.get("fixture",{}).get("status",{}).get("elapsed")
+                if elapsed is not None:
+                    # heurística: contar subs/cards/injuries nos últimos 20 minutos
+                    recent_count = 0
+                    for p in processed:
+                        rv = p.get("raw",{})
+                        et = rv.get("time",{}).get("elapsed") or 0
+                        if (int(elapsed) - int(et)) <= 20:
+                            cat = p.get("category","").lower()
+                            if "substitution" in cat or "sub" in cat: recent_count += 1
+                            if "card" in cat: recent_count += 1
+                            if "injury" in cat or "injury/interruption" in cat: recent_count += 2
+                    minutes = round(recent_count * 0.8) if recent_count>0 else None
+                    if not minutes:
+                        if 40 <= int(elapsed) <= 45: minutes = 3
+                        elif 80 <= int(elapsed) <= 90: minutes = 4
+                    if minutes:
+                        estimated_extra = max(1, min(7, minutes))
+            except:
+                estimated_extra = None
             result = {
                 "fixture": fixture,
                 "teams": fixture.get("teams", {}),
@@ -250,26 +239,25 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                 "statistics": {"full": full_stats, "firstHalf_derived": period_agg.get("first"), "secondHalf_derived": period_agg.get("second")},
                 "events": processed,
                 "lineups": lineups,
-                "players": players
+                "players": players,
+                "estimated_extra": estimated_extra
             }
-            _cache_set(cache_key, result)
+            _cache_set(ck, result)
             return result
         else:
             # NBA/NFL fallback
-            base = cfg["base"]
-            game_resp = safe_get(f"{base}/games", headers_for_sport:=headers_for(sport), params={"id": game_id})
+            game_resp = safe_get(f"{base}/games", headers, params={"id": game_id})
             game_data = game_resp.get("response") if game_resp and isinstance(game_resp, dict) and "response" in game_resp else (game_resp or [])
             game = game_data[0] if isinstance(game_data, list) and game_data else (game_data if isinstance(game_data, dict) else {})
-            players_resp = safe_get(f"{base}/players/statistics", headers_for_sport, params={"game": game_id})
+            players_resp = safe_get(f"{base}/players/statistics", headers, params={"game": game_id})
             players_stats = players_resp.get("response") if players_resp and isinstance(players_resp, dict) and "response" in players_resp else (players_resp or [])
             result = {"fixture": game, "teams": game.get("teams", {}), "score": game.get("scores") or game.get("score") or {}, "status": game.get("status", {}), "players_stats": players_stats}
-            _cache_set(cache_key, result)
+            _cache_set(ck, result)
             return result
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-# helper used above
 def try_int(v):
     try:
         if v is None: return None
