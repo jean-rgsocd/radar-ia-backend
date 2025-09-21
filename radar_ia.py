@@ -1,236 +1,229 @@
 # radar_ia.py
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Any, Dict, List
-import requests, time, traceback
-from datetime import datetime
+import requests, os, traceback, time
+from typing import List, Dict, Any
 
-app = FastAPI(title="Radar IA Backend")
+app = FastAPI(title="Radar IA")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# coloque sua chave aqui (ou leia de env var)
-API_KEY = "7baa5e00c8ae57d0e6240f790c6840dd"
-
+API_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
 API_CFG = {
-    "football": {"base": "https://v3.football.api-sports.io", "host": "v3.football.api-sports.io"},
-    "nba":      {"base": "https://v2.nba.api-sports.io",      "host": "v2.nba.api-sports.io"},
-    "nfl":      {"base": "https://v2.nfl.api-sports.io",      "host": "v2.nfl.api-sports.io"}
+    "football": {"base":"https://v3.football.api-sports.io", "host":"v3.football.api-sports.io"},
+    "nba":      {"base":"https://v2.nba.api-sports.io",      "host":"v2.nba.api-sports.io"},
+    "nfl":      {"base":"https://v2.nfl.api-sports.io",      "host":"v2.nfl.api-sports.io"}
 }
 
-def get_headers(sport):
+CACHE_TTL = 8
+_cache = {}
+
+def _cache_get(key):
+    rec = _cache.get(key)
+    if not rec: return None
+    if time.time() - rec["ts"] > CACHE_TTL:
+        _cache.pop(key, None)
+        return None
+    return rec["data"]
+
+def _cache_set(key, data):
+    _cache[key] = {"ts": time.time(), "data": data}
+
+def headers_for(sport):
     cfg = API_CFG.get(sport, API_CFG["football"])
     return {"x-rapidapi-key": API_KEY, "x-rapidapi-host": cfg["host"]}
 
-def safe_get_json(url, headers, params=None, timeout=20):
+def safe_get(url, headers, params=None, timeout=20):
     try:
         r = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print("HTTP ERROR", url, params, e)
+        print("safe_get error", url, params, e)
         return None
 
-def normalize_stats_obj(stat_obj) -> Dict[str,int]:
-    """Normalize structure variations into dict of simplified keys (best-effort)."""
-    mapping = {
-        "Shots on Goal":"shots_on_goal","Shots off Goal":"shots_off_goal","Total Shots":"total_shots",
-        "Blocked Shots":"blocked_shots","Shots insidebox":"shots_insidebox","Shots outsidebox":"shots_outsidebox",
-        "Fouls":"fouls","Corner Kicks":"corners","Offsides":"offsides","Ball Possession":"possession",
-        "Yellow Cards":"yellow_cards","Red Cards":"red_cards","Goalkeeper Saves":"keeper_saves",
-        "Total passes":"total_passes","Passes accurate":"passes_accurate","Passes %":"passes_pct"
-    }
-    out = {}
-    # stat_obj may be {"Shots on Goal": {"home":"5","away":"2"}, ... } OR list-of-team-stats
-    if isinstance(stat_obj, dict):
-        for k,v in stat_obj.items():
-            key = mapping.get(k, k.lower().replace(" ", "_"))
-            # v could be {"home": "5", "away": "2"} or string number
-            if isinstance(v, dict):
-                out[key] = {"home": v.get("home"), "away": v.get("away")}
-            else:
-                out[key] = v
+def _compute_sort_key(ev):
+    try:
+        elapsed = int(ev.get("time", {}).get("elapsed") or 0)
+    except:
+        elapsed = 0
+    try:
+        second = int(ev.get("time", {}).get("second") or 0)
+    except:
+        second = 0
+    try:
+        extra = int(ev.get("time", {}).get("extra") or 0)
+    except:
+        extra = 0
+    return (elapsed + extra)*60 + second
+
+def _format_display_time(ev):
+    t = ev.get("time", {}) or {}
+    elapsed = t.get("elapsed")
+    second = t.get("second")
+    extra = t.get("extra")
+    if elapsed is None:
+        return "-"
+    sec_part = f'{int(second):02d}"' if second is not None else ""
+    if extra:
+        return f"{elapsed}+{extra}'{sec_part}"
+    return f"{elapsed}'{sec_part}"
+
+def classify_event(ev):
+    t = (ev.get("type") or "").lower()
+    d = (ev.get("detail") or "").lower()
+    if "goal" in t or "goal" in d: return "Goal"
+    if "card" in t or "card" in d:
+        if "yellow" in d: return "Yellow Card"
+        if "red" in d: return "Red Card"
+        return "Card"
+    if "substitution" in t or "substitution" in d or "sub" in d: return "Substitution"
+    if "corner" in t or "corner" in d: return "Corner"
+    if "foul" in t or "foul" in d: return "Foul"
+    if "shot" in t or "shot" in d or "on target" in d: return "Shot"
+    return ev.get("type") or ev.get("detail") or "Other"
+
+@app.get("/ligas")
+def ligas():
+    cache_key = "radar_ligas_live"
+    c = _cache_get(cache_key)
+    if c is not None:
+        return c
+    cfg = API_CFG["football"]
+    resp = safe_get(f"{cfg['base']}/fixtures", headers_for("football"), params={"live":"all"})
+    if not resp:
+        return []
+    data = resp.get("response") if isinstance(resp, dict) and "response" in resp else resp
+    leagues = {}
+    for f in data:
+        l = f.get("league") or {}
+        leagues[l.get("id")] = {"id": l.get("id"), "name": l.get("name"), "country": l.get("country")}
+    out = list(leagues.values())
+    _cache_set(cache_key, out)
     return out
 
-def parse_v3_statistics_response(resp_json):
-    """
-    Accept different shapes. We will try to return:
-    stats_by_team = { 'home': {k:v}, 'away':{k:v} }
-    and optionally halftime / first/second if present.
-    """
-    stats_by_team = {"home":{}, "away":{}}
-    # Some older v3 responses are list-of-objects per team, others are dict map stat->home/away
-    if not resp_json:
-        return stats_by_team, {}
-    # If response wrapper:
-    # Try to find "response" key with array or dict
-    data = resp_json.get("response") if isinstance(resp_json, dict) and "response" in resp_json else resp_json
-    # case dict of stats -> { "Shots on Goal": {"home":"5","away":"2"}, ...}
-    if isinstance(data, dict):
-        normalized = normalize_stats_obj(data)
-        # normalized keys map to dicts with home/away
-        for k, val in normalized.items():
-            if isinstance(val, dict):
-                stats_by_team["home"][k] = try_int(val.get("home"))
-                stats_by_team["away"][k] = try_int(val.get("away"))
-            else:
-                # fallback: treat as total
-                stats_by_team["home"][k] = try_int(val)
-                stats_by_team["away"][k] = try_int(val)
-        return stats_by_team, {}
-    # case response is list (some responses provide list per team)
-    if isinstance(data, list):
-        # search if items have 'team' and 'statistics' arrays
-        for item in data:
-            team = item.get("team") or {}
-            side = None
-            # item.team.id could be used to map later, but we don't know home/away here.
-            stats_arr = item.get("statistics") or item.get("statistics", [])
-            if isinstance(stats_arr, list) and team:
-                # build map for this team
-                tmp = {}
-                for s in stats_arr:
-                    k = (s.get("type") or s.get("name") or "").strip()
-                    v = s.get("value")
-                    # if v contains " / " or " / " etc - pick left part
-                    if isinstance(v, str) and "/" in v:
-                        try:
-                            v0 = v.split("/")[0]
-                            v = int(v0)
-                        except:
-                            try: v = int(float(v))
-                            except: v = v
-                    try:
-                        v = int(v)
-                    except:
-                        v = v
-                    tmp[k] = v
-                # attach to a 'team' bucket, leave mapping to caller (we'll include team.id)
-                stats_by_team[team.get("id")] = tmp
-        # return dict keyed by team id; caller will match ids to home/away
-        return stats_by_team, {}
-    return stats_by_team, {}
-
-def try_int(v):
-    try:
-        if v is None: return None
-        if isinstance(v, str) and "%" in v:
-            return int(v.replace("%","").strip())
-        return int(v)
-    except:
-        try:
-            return int(float(v))
-        except:
-            return v
-
-def events_to_period_stats(events, home_id, away_id):
-    """Aggregate events into simple counts per team & period (first/second/full)."""
-    agg = {
-        "first": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
-                  "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
-        "second": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
-                   "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
-        "full": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
-                 "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}}
-    }
-    for ev in events:
-        t = ev.get("team",{}) or {}
-        team_id = t.get("id")
-        side = "home" if team_id == home_id else "away"
-        time = ev.get("time") or {}
-        elapsed = ev.get("time",{}).get("elapsed")
-        # decide period (use elapsed and event.period if available)
-        period = "full"
-        if elapsed is not None:
-            try:
-                e = int(elapsed)
-                period = "first" if e <= 45 else "second"
-            except:
-                period = "full"
-        typ = (ev.get("type") or "").lower()
-        detail = (ev.get("detail") or "").lower()
-        # classify
-        if "shot" in typ or "goal" in typ or "shot" in detail:
-            # shot; further check 'on target' in detail
-            agg[period][side]["shots"] += 1
-            agg["full"][side]["shots"] += 1
-            if "on target" in detail or "goal" in typ or "goal" in detail:
-                agg[period][side]["shots_on_target"] += 1
-                agg["full"][side]["shots_on_target"] += 1
-        if "corner" in typ or "corner" in detail:
-            agg[period][side]["corners"] += 1
-            agg["full"][side]["corners"] += 1
-        if "card" in typ or "yellow" in detail:
-            if "red" in detail:
-                agg[period][side]["red"] += 1
-                agg["full"][side]["red"] += 1
-            else:
-                agg[period][side]["yellow"] += 1
-                agg["full"][side]["yellow"] += 1
-        if "foul" in typ or "foul" in detail:
-            agg[period][side]["fouls"] += 1
-            agg["full"][side]["fouls"] += 1
-    return agg
+@app.get("/jogos-aovivo")
+def jogos_aovivo(league: int = Query(None)):
+    cache_key = f"radar_jogos_live_{league or 'all'}"
+    c = _cache_get(cache_key)
+    if c is not None:
+        return c
+    cfg = API_CFG["football"]
+    params = {"live":"all"}
+    if league:
+        params["league"] = league
+    resp = safe_get(f"{cfg['base']}/fixtures", headers_for("football"), params=params)
+    if not resp:
+        return []
+    data = resp.get("response") if isinstance(resp, dict) and "response" in resp else resp
+    out = []
+    for f in data:
+        out.append({
+            "game_id": f.get("fixture",{}).get("id"),
+            "title": f"{f.get('teams',{}).get('home',{}).get('name')} vs {f.get('teams',{}).get('away',{}).get('name')} ({f.get('league',{}).get('name')})",
+            "league": f.get("league"),
+            "teams": f.get("teams"),
+            "fixture": f.get("fixture"),
+            "status": f.get("fixture",{}).get("status")
+        })
+    _cache_set(cache_key, out)
+    return out
 
 @app.get("/stats-aovivo/{game_id}")
 def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","nba","nfl"])):
-    """
-    Return aggregated richer stats for Radar.
-    Uses v3 endpoints for football (fixtures/statistics, fixtures/events, fixtures/lineups, fixtures/players)
-    and v2 endpoints for NBA/NFL where available.
-    """
+    cache_key = f"radar_stats_{sport}_{game_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
-        cfg = API_CFG.get(sport, API_CFG["football"])
-        headers = get_headers(sport)
+        cfg = API_CFG[sport]
         base = cfg["base"]
+        headers = headers_for(sport)
 
         if sport == "football":
-            # get fixture detail
-            fixture_raw = safe_get_json(f"{base}/fixtures", headers, params={"id": game_id})
-            if not fixture_raw:
+            fixture_resp = safe_get(f"{base}/fixtures", headers, params={"id": game_id})
+            if not fixture_resp:
                 raise HTTPException(status_code=404, detail="Fixture not found")
-            # some responses are wrapper {response:[...]}
-            data_list = fixture_raw.get("response") if isinstance(fixture_raw, dict) and "response" in fixture_raw else fixture_raw
-            fixture = data_list[0] if isinstance(data_list, list) and data_list else (data_list if isinstance(data_list, dict) else {})
-            # statistics (try halftime)
-            stats_resp = safe_get_json(f"{base}/fixtures/statistics", headers, params={"fixture": game_id, "half":"true"})
-            stats_map, _ = parse_v3_statistics_response(stats_resp or {})
-            # events
-            events_resp = safe_get_json(f"{base}/fixtures/events", headers, params={"fixture": game_id})
-            events = events_resp.get("response") if events_resp and isinstance(events_resp, dict) and "response" in events_resp else (events_resp if events_resp else [])
-            # lineups and players
-            lineups_resp = safe_get_json(f"{base}/fixtures/lineups", headers, params={"fixture": game_id})
-            players_resp = safe_get_json(f"{base}/fixtures/players", headers, params={"fixture": game_id})
-            lineups = lineups_resp.get("response") if lineups_resp and isinstance(lineups_resp, dict) and "response" in lineups_resp else (lineups_resp or [])
-            players = players_resp.get("response") if players_resp and isinstance(players_resp, dict) and "response" in players_resp else (players_resp or [])
-            # build standardized statistics: if stats_map keyed by team id, map to home/away
-            teams = fixture.get("teams", {})
-            home_id = teams.get("home",{}).get("id")
-            away_id = teams.get("away",{}).get("id")
+            fixture_data = fixture_resp.get("response") if isinstance(fixture_resp, dict) and "response" in fixture_resp else fixture_resp
+            fixture = fixture_data[0] if isinstance(fixture_data, list) and fixture_data else (fixture_data if isinstance(fixture_data, dict) else {})
+
+            stats_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id, "half":"true"})
+            stats_wrapper = stats_resp or {}
+            # parse statistics into map if possible (build simple full home/away)
             full_stats = {"home":{}, "away":{}}
-            # stats_map might be dict of statname-> {home:.. away:..} or keyed by team id
-            if isinstance(stats_map, dict):
-                # handle both cases
-                # if stats_map has keys 'home'/'away' as above:
-                if 'home' in stats_map and 'away' in stats_map:
-                    full_stats = stats_map
+            try:
+                # if response has list per team
+                stats_list = stats_wrapper.get("response") if isinstance(stats_wrapper, dict) and "response" in stats_wrapper else stats_wrapper
+                # if list-of-teams
+                if isinstance(stats_list, list) and len(stats_list)>0:
+                    for team_stats in stats_list:
+                        team = team_stats.get("team") or {}
+                        tid = team.get("id")
+                        side = None
+                        home_id = fixture.get("teams",{}).get("home",{}).get("id")
+                        away_id = fixture.get("teams",{}).get("away",{}).get("id")
+                        if tid == home_id: side = "home"
+                        elif tid == away_id: side = "away"
+                        else: side = None
+                        stats_entries = team_stats.get("statistics") or []
+                        tmp = {}
+                        for s in stats_entries:
+                            k = (s.get("type") or s.get("name") or "").strip()
+                            v = s.get("value")
+                            try:
+                                if isinstance(v, str) and "/" in v:
+                                    v = int(v.split("/")[0])
+                                else:
+                                    v = int(v)
+                            except:
+                                try: v = int(float(v))
+                                except: v = v
+                            tmp[k] = v
+                        if side:
+                            full_stats[side].update(tmp)
+                        else:
+                            # fallback: place under home if empty
+                            if not full_stats["home"]:
+                                full_stats["home"].update(tmp)
+                            else:
+                                full_stats["away"].update(tmp)
                 else:
-                    # keyed by team id
-                    hid = stats_map.get(home_id, {})
-                    aid = stats_map.get(away_id, {})
-                    # combine common keys
-                    keys = set(list(hid.keys()) + list(aid.keys()))
-                    for k in keys:
-                        full_stats["home"][k] = hid.get(k) if hid else None
-                        full_stats["away"][k] = aid.get(k) if aid else None
-            # fallback: compute from events
+                    # sometimes stats come as dict of stat-> {home:.., away:..}
+                    if isinstance(stats_list, dict):
+                        for k,v in stats_list.items():
+                            if isinstance(v, dict):
+                                full_stats["home"][k] = try_int(v.get("home"))
+                                full_stats["away"][k] = try_int(v.get("away"))
+            except Exception as e:
+                print("parse stats error", e)
+
+            events_resp = safe_get(f"{base}/fixtures/events", headers, params={"fixture": game_id})
+            events = events_resp.get("response") if events_resp and isinstance(events_resp, dict) and "response" in events_resp else (events_resp or [])
+            # enrich events with display_time and category
+            processed = []
+            for ev in events:
+                ev_proc = {
+                    "display_time": _format_display_time(ev),
+                    "category": classify_event(ev),
+                    "type": ev.get("type"),
+                    "detail": ev.get("detail"),
+                    "player": ev.get("player",{}).get("name") if ev.get("player") else None,
+                    "team": ev.get("team",{}).get("name") if ev.get("team") else None,
+                    "raw": ev,
+                    "_sort": _compute_sort_key(ev)
+                }
+                processed.append(ev_proc)
+            processed.sort(key=lambda x: x["_sort"], reverse=True)
+
+            # derive period stats from events
+            home_id = fixture.get("teams",{}).get("home",{}).get("id")
+            away_id = fixture.get("teams",{}).get("away",{}).get("id")
             period_agg = events_to_period_stats(events, home_id, away_id)
-            # if API didn't provide certain stats, we can fill from aggregated events
-            # e.g. if total_shots missing, use period_agg['full'][side]['shots']
+
+            # ensure full_stats has keys for mapping
             for side in ("home","away"):
                 if not full_stats.get(side):
                     full_stats[side] = {}
                 if full_stats[side].get("total_shots") in (None,0):
-                    # map to integer
                     full_stats[side]["total_shots"] = period_agg["full"][side].get("shots",0)
                 if full_stats[side].get("shots_on_goal") in (None,0):
                     full_stats[side]["shots_on_goal"] = period_agg["full"][side].get("shots_on_target",0)
@@ -242,42 +235,82 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                     full_stats[side]["yellow_cards"] = period_agg["full"][side].get("yellow",0)
                 if full_stats[side].get("red_cards") in (None,0):
                     full_stats[side]["red_cards"] = period_agg["full"][side].get("red",0)
-            # sort events descending by time elapsed
-            def ev_key(e):
-                try:
-                    return int(e.get("time",{}).get("elapsed") or 0)
-                except:
-                    return 0
-            events_sorted = sorted(events, key=lambda x: ev_key(x), reverse=True)
-            # produce result
-            return {
+
+            # lineups and players
+            lineups_resp = safe_get(f"{base}/fixtures/lineups", headers, params={"fixture": game_id})
+            lineups = lineups_resp.get("response") if lineups_resp and isinstance(lineups_resp, dict) and "response" in lineups_resp else (lineups_resp or [])
+            players_resp = safe_get(f"{base}/fixtures/players", headers, params={"fixture": game_id})
+            players = players_resp.get("response") if players_resp and isinstance(players_resp, dict) and "response" in players_resp else (players_resp or [])
+
+            result = {
                 "fixture": fixture,
-                "teams": teams,
+                "teams": fixture.get("teams", {}),
                 "score": fixture.get("goals") or fixture.get("score") or {},
-                "status": fixture.get("status", {}),
-                "statistics": {
-                    "full": full_stats,
-                    "firstHalf_derived": period_agg.get("first"),
-                    "secondHalf_derived": period_agg.get("second")
-                },
-                "events": events_sorted,
+                "status": fixture.get("status") or fixture.get("fixture",{}).get("status",{}),
+                "statistics": {"full": full_stats, "firstHalf_derived": period_agg.get("first"), "secondHalf_derived": period_agg.get("second")},
+                "events": processed,
                 "lineups": lineups,
                 "players": players
             }
-
+            _cache_set(cache_key, result)
+            return result
         else:
-            # NBA / NFL (v2/v1): best-effort using games and players/statistics endpoints
-            # games endpoint
+            # NBA/NFL fallback
             base = cfg["base"]
-            game_resp = safe_get_json(f"{base}/games", get_headers(sport), params={"id": game_id})
+            game_resp = safe_get(f"{base}/games", headers_for_sport:=headers_for(sport), params={"id": game_id})
             game_data = game_resp.get("response") if game_resp and isinstance(game_resp, dict) and "response" in game_resp else (game_resp or [])
             game = game_data[0] if isinstance(game_data, list) and game_data else (game_data if isinstance(game_data, dict) else {})
-            # players stats
-            players_stat_resp = safe_get_json(f"{base}/players/statistics", get_headers(sport), params={"game": game_id})
-            players_stats = players_stat_resp.get("response") if players_stat_resp and isinstance(players_stat_resp, dict) and "response" in players_stat_resp else (players_stat_resp or [])
-            # build simple normalized structure
-            return {"fixture": game, "teams": game.get("teams", {}), "score": game.get("scores", {}), "status": game.get("status", {}), "players_stats": players_stats}
-
+            players_resp = safe_get(f"{base}/players/statistics", headers_for_sport, params={"game": game_id})
+            players_stats = players_resp.get("response") if players_resp and isinstance(players_resp, dict) and "response" in players_resp else (players_resp or [])
+            result = {"fixture": game, "teams": game.get("teams", {}), "score": game.get("scores") or game.get("score") or {}, "status": game.get("status", {}), "players_stats": players_stats}
+            _cache_set(cache_key, result)
+            return result
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# helper used above
+def try_int(v):
+    try:
+        if v is None: return None
+        if isinstance(v, str) and "%" in v:
+            return int(v.replace("%","").strip())
+        return int(v)
+    except:
+        try: return int(float(v))
+        except: return v
+
+def events_to_period_stats(events, home_id, away_id):
+    agg = {
+        "first": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},"away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
+        "second": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},"away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
+        "full": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},"away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}}
+    }
+    for ev in events:
+        team = ev.get("team") or {}
+        team_id = team.get("id")
+        side = "home" if team_id == home_id else "away"
+        elapsed = ev.get("time",{}).get("elapsed")
+        period = "full"
+        try:
+            if elapsed is not None:
+                e = int(elapsed)
+                period = "first" if e <= 45 else "second"
+        except:
+            period = "full"
+        typ = (ev.get("type") or "").lower()
+        detail = (ev.get("detail") or "").lower()
+        if "shot" in typ or "shot" in detail or "goal" in typ or "goal" in detail:
+            agg[period][side]["shots"] += 1; agg["full"][side]["shots"] += 1
+            if "on target" in detail or "goal" in typ or "goal" in detail:
+                agg[period][side]["shots_on_target"] += 1; agg["full"][side]["shots_on_target"] += 1
+        if "corner" in typ or "corner" in detail:
+            agg[period][side]["corners"] += 1; agg["full"][side]["corners"] += 1
+        if "foul" in typ or "foul" in detail:
+            agg[period][side]["fouls"] += 1; agg["full"][side]["fouls"] += 1
+        if "card" in typ or "yellow" in detail or "red" in detail:
+            if "red" in detail:
+                agg[period][side]["red"] += 1; agg["full"][side]["red"] += 1
+            else:
+                agg[period][side]["yellow"] += 1; agg["full"][side]["yellow"] += 1
+    return agg
