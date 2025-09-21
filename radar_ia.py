@@ -80,10 +80,16 @@ def classify_event(ev):
         return "Substitution"
     if "shot" in t or "shot" in d: 
         return "Shot"
+    # 👇 garantir que faltas e escanteios apareçam
+    if "free kick" in d: 
+        return "Foul"
+    if "penalty" in d: 
+        return "Shot (Penalty)"
     return ev.get("type") or ev.get("detail") or "Other"
+    
 
 # ---------------- PERIOD AGGREGATION ----------------
-def events_to_period_stats(events, home_id, away_id):
+def events_to_period_stats(events, home_id, away_id, match_status=None):
     agg = {
         "first": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
                   "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
@@ -97,14 +103,20 @@ def events_to_period_stats(events, home_id, away_id):
         team = ev.get("team") or {}
         team_id = team.get("id")
         side = "home" if team_id == home_id else "away"
+
         elapsed = ev.get("time", {}).get("elapsed")
         period = "full"
         try:
             if elapsed is not None:
                 e = int(elapsed)
-                period = "first" if e <= 45 else "second"
+                if e <= 45:
+                    period = "first"
+                elif e >= 46:
+                    # só entra no 2º tempo se status realmente indicar 2H
+                    if match_status and match_status.get("short") == "2H":
+                        period = "second"
         except:
-            period = "full"
+            period = "full" 
 
         typ = (ev.get("type") or "").lower()
         detail = (ev.get("detail") or "").lower()
@@ -245,7 +257,7 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
             # Estatísticas derivadas (1T / 2T)
             home_id = fixture.get("teams", {}).get("home", {}).get("id")
             away_id = fixture.get("teams", {}).get("away", {}).get("id")
-            period_agg = events_to_period_stats(events, home_id, away_id)
+            period_agg = events_to_period_stats(events, home_id, away_id, fixture.get("fixture",{}).get("status"))
 
             # Estimativa de acréscimos
             estimated_extra = None
@@ -280,5 +292,6 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
