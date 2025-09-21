@@ -201,10 +201,8 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
                         tmp["yellow_cards"] = v
                     elif "red" in k:
                         tmp["red_cards"] = v
-                    elif "dangerous attack" in k or "dangerous_attacks" in k:
-                        tmp["dangerous_attacks"] = v
-                    elif "attack" in k:
-                        tmp["attacks"] = v
+                    elif "offside" in k or "offsides" in k:
+                        tmp["offsides"] = v
                     else:
                         tmp[k] = v
 
