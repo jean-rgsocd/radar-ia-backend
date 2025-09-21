@@ -1,373 +1,238 @@
-# radar_ia.py
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-import requests, os, traceback, time
+// radar.js - versão Half-Time / Full-Time
+document.addEventListener("DOMContentLoaded", () => {
+  const RADAR_API = "https://radar-ia-backend.onrender.com";
+  const radarSection = document.getElementById("radar-ia-section");
+  if (!radarSection) return;
 
-app = FastAPI(title="Radar IA")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+  const leagueSelect = document.getElementById("radar-league-select");
+  const gameSelect   = document.getElementById("radar-game-select");
+  const dashboard    = document.getElementById("radar-dashboard");
+  const scoreEl      = document.getElementById("radar-score");
+  const minuteEl     = document.getElementById("radar-minute");
+  const homeTeamEl   = document.getElementById("home-team-name");
+  const awayTeamEl   = document.getElementById("away-team-name");
+  const eventsEl     = document.getElementById("radar-events");
+  const stoppageBox  = document.getElementById("stoppage-time-prediction");
+  const stoppageVal  = document.getElementById("stoppage-time-value");
+  const tabs         = document.querySelectorAll(".period-btn");
 
-API_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
-API_CFG = {
-    "football": {"base": "https://v3.football.api-sports.io", "host": "v3.football.api-sports.io"},
-    "nba":      {"base": "https://v2.nba.api-sports.io",      "host": "v2.nba.api-sports.io"},
-    "nfl":      {"base": "https://v2.nfl.api-sports.io",      "host": "v2.nfl.api-sports.io"}
-}
+  const statPossEl   = document.getElementById("stat-possession");
+  const statShotsEl  = document.getElementById("stat-shots");
+  const statCornersEl= document.getElementById("stat-corners");
+  const statFoulsEl  = document.getElementById("stat-fouls");
+  const statYellowEl = document.getElementById("stat-yellow-cards");
+  const statRedEl    = document.getElementById("stat-red-cards");
 
-CACHE_TTL = 8
-_cache = {}
+  let currentGameId = null;
+  let currentPeriod = "full"; // "half" ou "full"
+  let updateInterval = null;
+  let latestData = null;
+  let halfTimeStats = null; // snapshot do 1º tempo
 
-# ---------------- UTILS ----------------
-def _cache_get(key):
-    rec = _cache.get(key)
-    if not rec: return None
-    if time.time() - rec["ts"] > CACHE_TTL:
-        _cache.pop(key, None)
-        return None
-    return rec["data"]
+  // util: pegar estatística por chave
+  function mapKeysLower(obj = {}) {
+    const m = {};
+    Object.keys(obj || {}).forEach(k => { m[k.toLowerCase()] = obj[k]; });
+    return m;
+  }
+  function pickStat(sideObj, candidates = []) {
+    if (!sideObj) return null;
+    const m = mapKeysLower(sideObj);
+    for (const c of candidates) {
+      const key = c.toLowerCase();
+      if (m[key] !== undefined && m[key] !== null) return m[key];
+    }
+    return null;
+  }
 
-def _cache_set(key, data):
-    _cache[key] = {"ts": time.time(), "data": data}
+  function iconFor(cat = "") {
+    const c = (cat || "").toLowerCase();
+    if (c.includes("goal")) return "⚽";
+    if (c.includes("penalty")) return "🥅";
+    if (c.includes("freekick") || c.includes("free kick")) return "🎯";
+    if (c.includes("yellow")) return "🟨";
+    if (c.includes("red")) return "🟥";
+    if (c.includes("sub")) return "🔁";
+    if (c.includes("shot") || c.includes("on target")) return "🎯";
+    if (c.includes("corner")) return "🚩";
+    if (c.includes("foul")) return "🛑";
+    return "•";
+  }
 
-def headers_for(sport):
-    cfg = API_CFG.get(sport, API_CFG["football"])
-    return {"x-rapidapi-key": API_KEY, "x-rapidapi-host": cfg["host"]}
+  function renderEvents(events = []) {
+    eventsEl.innerHTML = "";
+    if (!events || events.length === 0) {
+      eventsEl.innerHTML = "<li>Nenhum evento recente</li>";
+      return;
+    }
+    events = events.slice().sort((a,b) => (b._sort || 0) - (a._sort || 0));
+    events.forEach(ev => {
+      const li = document.createElement("li");
+      li.className = "flex items-start gap-2 py-1";
+      const timeLabel = ev.display_time || "-";
+      const icon = iconFor(ev.category || ev.type || ev.detail || "");
+      const detail = ev.detail ? ` — ${ev.detail}` : "";
+      const player = ev.player ? ` — ${ev.player}` : "";
+      const team = ev.team ? ` (${ev.team})` : "";
+      li.innerHTML = `<span class="font-semibold text-slate-200">${timeLabel}</span>
+                      <span class="ml-2">${icon}</span>
+                      <div class="ml-2 text-sm text-slate-300">${(ev.type || '')}${detail}${player}${team}</div>`;
+      eventsEl.appendChild(li);
+    });
+  }
 
-def safe_get(url, headers, params=None, timeout=20):
-    try:
-        r = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print("safe_get error", url, params, e)
-        return None
+  // candidatos
+  const possessionCandidates = ["possession","ball possession","ball possession%","possession%","possession %"];
+  const totalShotsCandidates = ["total_shots","total shots","totalshots","total shots"];
+  const onTargetCandidates   = ["shots_on_goal","shots on goal","shots_on_target","shots on target"];
+  const cornersCandidates    = ["corner kicks","corner_kicks","cornerkicks","corners","corner"];
+  const foulsCandidates      = ["fouls","foul"];
+  const yellowCandidates     = ["yellow_cards","yellow cards","yellow card","yellow"];
+  const redCandidates        = ["red_cards","red cards","red card","red"];
 
-def _compute_sort_key(ev):
-    try: elapsed = int(ev.get("time", {}).get("elapsed") or 0)
-    except: elapsed = 0
-    try: second = int(ev.get("time", {}).get("second") or 0)
-    except: second = 0
-    try: extra = int(ev.get("time", {}).get("extra") or 0)
-    except: extra = 0
-    return (elapsed + extra) * 60 + second
+  function getVal(sideObj, candidates) {
+    return pickStat(sideObj, candidates) ?? "-";
+  }
 
-def _format_display_time(ev):
-    t = ev.get("time", {}) or {}
-    elapsed = t.get("elapsed")
-    second = t.get("second")
-    extra = t.get("extra")
-    if elapsed is None: return "-"
-    sec_part = f'{int(second):02d}"' if second is not None else ""
-    if extra: return f"{elapsed}+{extra}'{sec_part}"
-    return f"{elapsed}'{sec_part}"
-
-def classify_event(ev):
-    t = (ev.get("type") or "").lower()
-    d = (ev.get("detail") or "").lower()
-
-    if "goal" in t or "goal" in d: 
-        return "Goal"
-
-    # Cartões
-    if "yellow" in t or "yellow" in d: 
-        return "Yellow Card"
-    if "red" in t or "red" in d: 
-        return "Red Card"
-    if "card" in t or "card" in d: 
-        return "Card"
-
-    # Escanteios
-    if "corner" in t or "corner" in d: 
-        return "Corner"
-
-    # Faltas
-    if "foul" in t or "foul" in d: 
-        return "Foul"
-    if "free kick" in t or "free kick" in d: 
-        return "Free Kick"
-
-    # Substituições
-    if "substitution" in t or "sub" in d: 
-        return "Substitution"
-
-    # Finalizações
-    if "penalty" in t or "penalty" in d: 
-        return "Penalty"
-    if "shot" in t or "shot" in d: 
-        return "Shot"
-
-    return ev.get("type") or ev.get("detail") or "Other"
-
-    
-
-# ---------------- PERIOD AGGREGATION ----------------
-def events_to_period_stats(events, home_id, away_id, match_status=None):
-    agg = {
-        "first": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
-                  "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
-        "second": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
-                   "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
-        "full": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
-                 "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}}
+  function setStatsPanel(statsObj = {}) {
+    if (!statsObj || !statsObj.home || !statsObj.away) {
+      [statPossEl, statShotsEl, statCornersEl, statFoulsEl, statYellowEl, statRedEl]
+        .forEach(el => el && (el.textContent = "-"));
+      return;
     }
 
-    for ev in events:
-        team = ev.get("team") or {}
-        team_id = team.get("id")
-        side = "home" if team_id == home_id else "away"
+    const home = statsObj.home || {};
+    const away = statsObj.away || {};
 
-        elapsed = ev.get("time", {}).get("elapsed")
-        period = "full"
-        try:
-            if elapsed is not None:
-                e = int(elapsed)
-                if e <= 45:
-                    period = "first"
-                elif e >= 46:
-                    # só entra no 2º tempo se status realmente indicar 2H
-                    if match_status and match_status.get("short") == "2H":
-                        period = "second"
-        except:
-            period = "full" 
+    statPossEl.textContent   = `${getVal(home, possessionCandidates)} / ${getVal(away, possessionCandidates)}`;
+    statShotsEl.textContent  = `${getVal(home, totalShotsCandidates)} (${getVal(home, onTargetCandidates)}) / ${getVal(away, totalShotsCandidates)} (${getVal(away, onTargetCandidates)})`;
+    statCornersEl.textContent= `${getVal(home, cornersCandidates)} / ${getVal(away, cornersCandidates)}`;
+    statFoulsEl.textContent  = `${getVal(home, foulsCandidates)} / ${getVal(away, foulsCandidates)}`;
+    statYellowEl.textContent = `${getVal(home, yellowCandidates)} / ${getVal(away, yellowCandidates)}`;
+    statRedEl.textContent    = `${getVal(home, redCandidates)} / ${getVal(away, redCandidates)}`;
+  }
 
-        typ = (ev.get("type") or "").lower()
-        detail = (ev.get("detail") or "").lower()
+  async function loadLeagues() {
+    if (!leagueSelect) return;
+    leagueSelect.disabled = true;
+    leagueSelect.innerHTML = `<option>Carregando ligas...</option>`;
+    try {
+      const r = await fetch(`${RADAR_API}/ligas`);
+      const data = await r.json();
+      leagueSelect.innerHTML = `<option value="">Escolha uma liga</option>`;
+      data.forEach(l => leagueSelect.add(new Option(`${l.name} - ${l.country || ''}`, l.id)));
+      leagueSelect.disabled = false;
+    } catch {
+      leagueSelect.innerHTML = `<option value="">Erro ao carregar ligas</option>`;
+    }
+  }
 
-        # Shots
-        if "shot" in typ or "shot" in detail or "goal" in typ or "goal" in detail:
-            agg[period][side]["shots"] += 1
-            agg["full"][side]["shots"] += 1
-            if "on target" in detail or "goal" in typ or "goal" in detail:
-                agg[period][side]["shots_on_target"] += 1
-                agg["full"][side]["shots_on_target"] += 1
+  async function loadGames(leagueId = null) {
+    if (!gameSelect) return;
+    gameSelect.disabled = true;
+    gameSelect.innerHTML = `<option>Carregando jogos ao vivo...</option>`;
+    try {
+      const url = leagueId
+        ? `${RADAR_API}/jogos-aovivo?league=${encodeURIComponent(leagueId)}`
+        : `${RADAR_API}/jogos-aovivo`;
+      const r = await fetch(url);
+      const data = await r.json();
+      if (!data || data.length === 0) {
+        gameSelect.innerHTML = `<option value="">Nenhum jogo ao vivo</option>`;
+        gameSelect.disabled = true;
+        return;
+      }
+      gameSelect.innerHTML = `<option value="">Selecione um jogo</option>`;
+      data.forEach(g => gameSelect.add(new Option(g.title, g.game_id)));
+      gameSelect.disabled = false;
+    } catch {
+      gameSelect.innerHTML = `<option value="">Erro ao carregar jogos</option>`;
+    }
+  }
 
-        # Corners
-        if "corner" in typ or "corner" in detail:
-            agg[period][side]["corners"] += 1
-            agg["full"][side]["corners"] += 1
+  async function fetchStats(gameId) {
+    const url = `${RADAR_API}/stats-aovivo/${encodeURIComponent(gameId)}?sport=football`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("Erro ao buscar stats");
+    return await r.json();
+  }
 
-        # Fouls
-        if "foul" in typ or "foul" in detail:
-            agg[period][side]["fouls"] += 1
-            agg["full"][side]["fouls"] += 1
+  async function fetchAndRender(gameId) {
+    if (!gameId) return;
+    try {
+      const data = await fetchStats(gameId);
+      latestData = data;
 
-        # Cards
-        if "card" in typ or "yellow" in detail or "red" in detail:
-            if "red" in detail:
-                agg[period][side]["red"] += 1
-                agg["full"][side]["red"] += 1
-            elif "yellow" in detail:
-                agg[period][side]["yellow"] += 1
-                agg["full"][side]["yellow"] += 1
+      const fixture = data.fixture || {};
+      const teams = data.teams || {};
+      homeTeamEl.textContent = teams.home?.name || "Time Casa";
+      awayTeamEl.textContent = teams.away?.name || "Time Fora";
 
-    return agg
+      scoreEl.textContent = `${data.score?.home ?? fixture.goals?.home ?? "-"} - ${data.score?.away ?? fixture.goals?.away ?? "-"}`;
+      minuteEl.textContent = data.status?.elapsed ? `${data.status.elapsed}'` : "-";
 
-# ---------------- ENDPOINTS ----------------
-@app.get("/ligas")
-def ligas():
-    ck = "radar_ligas_live"
-    c = _cache_get(ck)
-    if c is not None: return c
-    cfg = API_CFG["football"]
-    resp = safe_get(f"{cfg['base']}/fixtures", headers_for("football"), params={"live":"all"})
-    if not resp: return []
-    data = resp.get("response") if isinstance(resp, dict) else resp
-    leagues = {}
-    for f in data:
-        l = f.get("league") or {}
-        leagues[l.get("id")] = {"id": l.get("id"), "name": l.get("name"), "country": l.get("country")}
-    out = list(leagues.values())
-    _cache_set(ck, out)
-    return out
+      if (data.estimated_extra) {
+        stoppageBox.classList.remove("hidden");
+        stoppageVal.textContent = data.estimated_extra;
+      } else {
+        stoppageBox.classList.add("hidden");
+      }
 
-@app.get("/jogos-aovivo")
-def jogos_aovivo(league: int = Query(None)):
-    ck = f"radar_jogos_live_{league or 'all'}"
-    c = _cache_get(ck)
-    if c is not None: return c
-    cfg = API_CFG["football"]
-    params = {"live":"all"}
-    if league: params["league"] = league
-    resp = safe_get(f"{cfg['base']}/fixtures", headers_for("football"), params=params)
-    if not resp: return []
-    data = resp.get("response") if isinstance(resp, dict) else resp
-    out = []
-    for f in data:
-        out.append({
-            "game_id": f.get("fixture",{}).get("id"),
-            "title": f"{f.get('teams',{}).get('home',{}).get('name')} vs {f.get('teams',{}).get('away',{}).get('name')} ({f.get('league',{}).get('name')})",
-            "league": f.get("league"),
-            "teams": f.get("teams"),
-            "fixture": f.get("fixture"),
-            "status": f.get("fixture",{}).get("status")
-        })
-    _cache_set(ck, out)
-    return out
+      const fullStats = data.statistics || {};
 
-@app.get("/stats-aovivo/{game_id}")
-def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","nba","nfl"])):
-    ck = f"radar_stats_{sport}_{game_id}"
-    cached = _cache_get(ck)
-    if cached is not None: 
-        return cached
+      // congela snapshot no intervalo
+      if (data.status?.short === "HT" && !halfTimeStats) {
+        halfTimeStats = JSON.parse(JSON.stringify(fullStats));
+      }
 
-    try:
-        cfg = API_CFG[sport]
-        base = cfg["base"]
-        headers = headers_for(sport)
+      if (currentPeriod === "half") {
+        setStatsPanel(halfTimeStats || fullStats);
+      } else {
+        setStatsPanel(fullStats);
+      }
 
-        if sport != "football":
-            return {"message": "Radar detalhado apenas para futebol."}
+      renderEvents(data.events || []);
+      dashboard.classList.remove("hidden");
+    } catch (err) {
+      console.error("fetchAndRender error", err);
+      dashboard.classList.add("hidden");
+    }
+  }
 
-        # --- Fixture básico ---
-        fixture_resp = safe_get(f"{base}/fixtures", headers, params={"id": game_id})
-        if not fixture_resp:
-            raise HTTPException(status_code=404, detail="Fixture not found")
+  // eventos
+  gameSelect?.addEventListener("change", (ev) => {
+    const id = ev.target.value;
+    clearInterval(updateInterval);
+    if (!id) {
+      dashboard.classList.add("hidden");
+      return;
+    }
+    currentGameId = id;
+    fetchAndRender(currentGameId);
+    updateInterval = setInterval(() => fetchAndRender(currentGameId), 60000);
+  });
 
-        fixture_data = fixture_resp.get("response") if isinstance(fixture_resp, dict) else fixture_resp
-        fixture = fixture_data[0] if isinstance(fixture_data, list) else fixture_data
+  leagueSelect?.addEventListener("change", (ev) => {
+    const lid = ev.target.value;
+    if (!lid) return;
+    loadGames(lid);
+  });
 
-        # --- Estatísticas FULL ---
-        stats_full_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id})
-        full_stats = {"home": {}, "away": {}}
-        try:
-            stats_list = stats_full_resp.get("response", [])
-            for team_stats in stats_list:
-                team = team_stats.get("team") or {}
-                tid = team.get("id")
-                home_id = fixture.get("teams", {}).get("home", {}).get("id")
-                side = "home" if tid == home_id else "away"
-                tmp = {}
-                for s in team_stats.get("statistics") or []:
-                    k = (s.get("type") or "").strip()
-                    v = s.get("value")
-                    try:
-                        if isinstance(v, str) and "%" in v: 
-                            v = int(v.replace("%", ""))
-                        elif isinstance(v, str) and "/" in v: 
-                            v = int(v.split("/")[0])
-                        else: 
-                            v = int(v)
-                    except: 
-                        pass
-                    tmp[k] = v
-                full_stats[side].update(tmp)
-        except:
-            pass
+  tabs?.forEach(btn => {
+    btn.addEventListener("click", () => {
+      tabs.forEach(b => b.classList.remove("bg-cyan-600", "text-white"));
+      btn.classList.add("bg-cyan-600", "text-white");
+      const p = btn.dataset.period;
+      currentPeriod = (p === "half") ? "half" : "full";
+      if (currentGameId) fetchAndRender(currentGameId);
+    });
+  });
 
-        # --- Estatísticas 1º TEMPO ---
-        stats_first_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id, "half": "true"})
-        first_stats = {"home": {}, "away": {}}
-        try:
-            stats_list = stats_first_resp.get("response", [])
-            for team_stats in stats_list:
-                team = team_stats.get("team") or {}
-                tid = team.get("id")
-                home_id = fixture.get("teams", {}).get("home", {}).get("id")
-                side = "home" if tid == home_id else "away"
-                tmp = {}
-                for s in team_stats.get("statistics") or []:
-                    k = (s.get("type") or "").strip()
-                    v = s.get("value")
-                    try:
-                        if isinstance(v, str) and "%" in v: 
-                            v = int(v.replace("%", ""))
-                        elif isinstance(v, str) and "/" in v: 
-                            v = int(v.split("/")[0])
-                        else: 
-                            v = int(v)
-                    except: 
-                        pass
-                    tmp[k] = v
-                first_stats[side].update(tmp)
-        except:
-            pass
-
-        # --- Estatísticas 2º TEMPO ---
-        stats_second_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id, "half": "false"})
-        second_stats = {"home": {}, "away": {}}
-        try:
-            stats_list = stats_second_resp.get("response", [])
-            for team_stats in stats_list:
-                team = team_stats.get("team") or {}
-                tid = team.get("id")
-                home_id = fixture.get("teams", {}).get("home", {}).get("id")
-                side = "home" if tid == home_id else "away"
-                tmp = {}
-                for s in team_stats.get("statistics") or []:
-                    k = (s.get("type") or "").strip()
-                    v = s.get("value")
-                    try:
-                        if isinstance(v, str) and "%" in v: 
-                            v = int(v.replace("%", ""))
-                        elif isinstance(v, str) and "/" in v: 
-                            v = int(v.split("/")[0])
-                        else: 
-                            v = int(v)
-                    except: 
-                        pass
-                    tmp[k] = v
-                second_stats[side].update(tmp)
-        except:
-            pass
-
-        # --- Eventos ---
-        events_resp = safe_get(f"{base}/fixtures/events", headers, params={"fixture": game_id})
-        events = events_resp.get("response") if isinstance(events_resp, dict) else events_resp
-        processed = []
-        for ev in events:
-            processed.append({
-                "display_time": _format_display_time(ev),
-                "category": classify_event(ev),
-                "type": ev.get("type"),
-                "detail": ev.get("detail"),
-                "player": ev.get("player", {}).get("name"),
-                "team": ev.get("team", {}).get("name"),
-                "raw": ev,
-                "_sort": _compute_sort_key(ev)
-            })
-        processed.sort(key=lambda x: x["_sort"], reverse=True)
-
-        # --- Lineups e jogadores ---
-        lineups_resp = safe_get(f"{base}/fixtures/lineups", headers, params={"fixture": game_id})
-        lineups = lineups_resp.get("response") if isinstance(lineups_resp, dict) else lineups_resp
-        players_resp = safe_get(f"{base}/fixtures/players", headers, params={"fixture": game_id})
-        players = players_resp.get("response") if isinstance(players_resp, dict) else players_resp
-
-        # --- Estimativa de acréscimos ---
-        estimated_extra = None
-        try:
-            elapsed = fixture.get("fixture", {}).get("status", {}).get("elapsed")
-            if elapsed:
-                elapsed = int(elapsed)
-                if (35 <= elapsed <= 45) or (80 <= elapsed <= 90):
-                    subs_cards = sum(1 for ev in processed if "substitution" in ev["category"].lower() or "card" in ev["category"].lower())
-                    if subs_cards > 0: 
-                        estimated_extra = min(7, max(1, subs_cards))
-        except:
-            pass
-
-        result = {
-            "fixture": fixture,
-            "teams": fixture.get("teams", {}),
-            "score": fixture.get("goals") or {},
-            "status": fixture.get("fixture", {}).get("status"),
-            "statistics": {
-                "full": full_stats,
-                "first": first_stats,
-                "second": second_stats
-            },
-            "events": processed,
-            "lineups": lineups,
-            "players": players,
-            "estimated_extra": estimated_extra
-        }
-
-        _cache_set(ck, result)
-        return result
-
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
+  const obs = new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting) {
+      loadLeagues();
+      obs.disconnect();
+    }
+  }, { threshold: 0.1 });
+  obs.observe(radarSection);
+});
