@@ -66,26 +66,37 @@ def classify_event(ev):
 
     if "goal" in t or "goal" in d: 
         return "Goal"
-    if "yellow" in d: 
+
+    # Cartões
+    if "yellow" in t or "yellow" in d: 
         return "Yellow Card"
-    if "red" in d: 
+    if "red" in t or "red" in d: 
         return "Red Card"
-    if "card" in t: 
+    if "card" in t or "card" in d: 
         return "Card"
+
+    # Escanteios
     if "corner" in t or "corner" in d: 
         return "Corner"
+
+    # Faltas
     if "foul" in t or "foul" in d: 
         return "Foul"
+    if "free kick" in t or "free kick" in d: 
+        return "Free Kick"
+
+    # Substituições
     if "substitution" in t or "sub" in d: 
         return "Substitution"
+
+    # Finalizações
+    if "penalty" in t or "penalty" in d: 
+        return "Penalty"
     if "shot" in t or "shot" in d: 
         return "Shot"
-    # 👇 garantir que faltas e escanteios apareçam
-    if "free kick" in d: 
-        return "Foul"
-    if "penalty" in d: 
-        return "Shot (Penalty)"
+
     return ev.get("type") or ev.get("detail") or "Other"
+
     
 
 # ---------------- PERIOD AGGREGATION ----------------
@@ -292,6 +303,7 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
