@@ -60,7 +60,7 @@ def _format_display_time(ev):
     if extra: return f"{elapsed}+{extra}'{sec_part}"
     return f"{elapsed}'{sec_part}"
 
-ef classify_event(ev):
+def classify_event(ev):
     t = (ev.get("type") or "").lower()
     d = (ev.get("detail") or "").lower()
 
@@ -280,4 +280,5 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
