@@ -71,12 +71,12 @@ document.addEventListener("DOMContentLoaded", () => {
       li.className = "flex items-start gap-2 py-1";
       const timeLabel = ev.display_time || "-";
       const icon = iconFor(ev.category || ev.type || ev.detail || "");
-      const detail = ev.detail ? ` — ${ev.detail}` : "";
-      const player = ev.player ? ` — ${ev.player}` : "";
+      const detail = ev.detail ? ` - ${ev.detail}` : "";
+      const player = ev.player ? ` - ${ev.player}` : "";
       const team = ev.team ? ` (${ev.team})` : "";
       li.innerHTML = `<span class="font-semibold text-slate-200">${timeLabel}</span>
-                      <span class="ml-2">${icon}</span>
-                      <div class="ml-2 text-sm text-slate-300">${(ev.type || '')}${detail}${player}${team}</div>`;
+                <span class="ml-2">${icon}</span>
+                <div class="ml-2 text-sm text-slate-300">${(ev.type || '')}${detail}${player}${team}</div>`;
       eventsEl.appendChild(li);
     });
   }
@@ -236,3 +236,4 @@ document.addEventListener("DOMContentLoaded", () => {
   }, { threshold: 0.1 });
   obs.observe(radarSection);
 });
+
