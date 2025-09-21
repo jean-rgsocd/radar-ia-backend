@@ -179,41 +179,34 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
                 side = "home" if tid == home_id else ("away" if tid == away_id else None)
                 tmp = {}
 
- for team_stats in stats_list:
-    team = team_stats.get("team") or {}
-    tid = team.get("id")
-    side = "home" if tid == home_id else ("away" if tid == away_id else None)
-    tmp = {}
+                for s in (team_stats.get("statistics") or []):
+                    k = (s.get("type") or s.get("name") or "").strip().lower()
+                    v = try_int(s.get("value"))
 
-    for s in (team_stats.get("statistics") or []):
-        k = (s.get("type") or s.get("name") or "").strip().lower()
-        v = try_int(s.get("value"))
+                    # 🔑 Mapeamento padronizado
+                    if "total shots" in k:
+                        tmp["total_shots"] = v
+                    elif "shots on goal" in k:
+                        tmp["shots_on_goal"] = v
+                    elif "shots off goal" in k:
+                        tmp["shots_off_goal"] = v
+                    elif "blocked shots" in k:
+                        tmp["shots_blocked"] = v
+                    elif "ball possession" in k:
+                        tmp["possession"] = v
+                    elif "corner" in k:
+                        tmp["corners"] = v
+                    elif "foul" in k:
+                        tmp["fouls"] = v
+                    elif "yellow" in k:
+                        tmp["yellow_cards"] = v
+                    elif "red" in k:
+                        tmp["red_cards"] = v
+                    else:
+                        tmp[k] = v
 
-        # 🔑 Mapeamento padronizado
-        if "total shots" in k:
-            tmp["total_shots"] = v
-        elif "shots on goal" in k:
-            tmp["shots_on_goal"] = v
-        elif "shots off goal" in k:
-            tmp["shots_off_goal"] = v
-        elif "blocked shots" in k:
-            tmp["shots_blocked"] = v
-        elif "ball possession" in k:
-            tmp["possession"] = v
-        elif "corner" in k:
-            tmp["corners"] = v
-        elif "foul" in k:
-            tmp["fouls"] = v
-        elif "yellow" in k:
-            tmp["yellow_cards"] = v
-        elif "red" in k:
-            tmp["red_cards"] = v
-        else:
-            tmp[k] = v
-
-    if side:
-        full_stats[side].update(tmp)
-
+                if side:
+                    full_stats[side].update(tmp)
         except Exception as e:
             print("parse stats error", e)
 
@@ -339,5 +332,3 @@ def events_to_period_stats(events, home_id, away_id):
             else:
                 agg[period][side]["yellow"] += 1; agg["full"][side]["yellow"] += 1
     return agg
-
-
