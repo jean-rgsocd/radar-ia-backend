@@ -1,13 +1,13 @@
 # Filename: radar_ia.py
-# Versão 3.0 - Índice de Pressão Melhorado (real time)
+# Versão 4.0 - Análise por Tempo e Estimativa de Acréscimos
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime, timedelta
 
-app = FastAPI(title="Radar IA - V3.0 Real Time")
+app = FastAPI(title="Radar IA - V4.0 Detalhado")
 
 # --- CORS ---
 origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500"]
@@ -16,57 +16,73 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 # --- Configuração da API-Sports ---
 API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
 API_SPORTS_URL = "https://v3.football.api-sports.io"
-
-# --- Cache Simples ---
 cache: Dict[str, Dict[str, Any]] = {}
 
-# --- Jogos ao vivo ---
+# --- Endpoint de Jogos ao vivo ---
 @app.get("/jogos-aovivo")
 def get_live_games():
     cache_key = "live_games"
     if cache_key in cache and datetime.now() < cache[cache_key]['expiry']:
         return cache[cache_key]['data']
-
+    
     headers = {"x-apisports-key": API_SPORTS_KEY}
     params = {"live": "all"}
-
     try:
         response = requests.get(f"{API_SPORTS_URL}/fixtures", headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json().get("response", [])
-
         live_games = sorted([
-            {
-                "game_id": fixture["fixture"]["id"],
-                "title": f"{fixture['teams']['home']['name']} vs {fixture['teams']['away']['name']} ({fixture['league']['name']})"
-            }
-            for fixture in data if fixture.get("fixture") and fixture.get("teams")
+            {"game_id": f["fixture"]["id"], "title": f"{f['teams']['home']['name']} vs {f['teams']['away']['name']} ({f['league']['name']})"}
+            for f in data if f.get("fixture") and f.get("teams")
         ], key=lambda x: x["title"])
-
         cache[cache_key] = {"data": live_games, "expiry": datetime.now() + timedelta(minutes=2)}
         return live_games
     except requests.RequestException as e:
-        print(f"Erro ao buscar jogos ao vivo: {e}")
         raise HTTPException(status_code=500, detail="Erro ao contatar a API de esportes.")
 
-# --- Estatísticas ao vivo + Índice de Pressão ---
+# --- Lógica de Estimativa de Acréscimos ---
+def estimate_stoppage_time(events: List[Dict[str, Any]], period: str) -> int:
+    stoppage_seconds = 0
+    start_minute, end_minute = (0, 45) if period == "1H" else (46, 90)
+    
+    period_events = [e for e in events if start_minute < e.get("time", {}).get("elapsed", 0) <= end_minute]
+    
+    goals = len([e for e in period_events if e.get("type") == "Goal"])
+    substitutions = len([e for e in period_events if e.get("type") == "subst"])
+    cards = len([e for e in period_events if e.get("type") == "Card"])
+    
+    # Heurística: 45s por gol, 30s por substituição, 15s por cartão
+    stoppage_seconds += goals * 45
+    stoppage_seconds += substitutions * 30
+    stoppage_seconds += cards * 15
+    
+    # Simula tempo para lesões e outras paradas (valor aleatório pequeno)
+    # Por exemplo, adiciona 1 minuto se houver mais de 5 eventos significativos
+    if len(period_events) > 5:
+        stoppage_seconds += 60
+
+    return round(stoppage_seconds / 60)
+
+# --- Estatísticas ao vivo + Análise por Tempo ---
 @app.get("/stats-aovivo/{game_id}")
 def get_live_stats_for_game(game_id: int):
     headers = {"x-apisports-key": API_SPORTS_KEY}
     params = {"id": game_id}
-
     try:
         response = requests.get(f"{API_SPORTS_URL}/fixtures", headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json().get("response", [])[0]
 
-        fixture_data = data.get("fixture", {})
-        teams_data = data.get("teams", {})
-        goals_data = data.get("goals", {})
+        fixture = data.get("fixture", {})
+        teams = data.get("teams", {})
+        goals = data.get("goals", {})
         stats_list = data.get("statistics", [])
-        events_data = data.get("events", [])
+        events = data.get("events", [])
+        
+        home_id = teams.get("home", {}).get("id")
+        away_id = teams.get("away", {}).get("id")
 
-        def get_stat(team_id, stat_name):
+        def get_stat_value(team_id, stat_name):
             for team_stats in stats_list:
                 if team_stats.get("team", {}).get("id") == team_id:
                     for stat in team_stats.get("statistics", []):
@@ -74,86 +90,79 @@ def get_live_stats_for_game(game_id: int):
                             return stat.get("value") or 0
             return 0
 
-        home_id = teams_data.get("home", {}).get("id")
-        away_id = teams_data.get("away", {}).get("id")
+        def calculate_stats_for_period(period_events):
+            stats = {
+                "shots_on_goal": {"home": 0, "away": 0},
+                "shots_off_goal": {"home": 0, "away": 0},
+                "total_shots": {"home": 0, "away": 0},
+                "corners": {"home": 0, "away": 0},
+                "fouls": {"home": 0, "away": 0},
+                "yellow_cards": {"home": 0, "away": 0},
+                "red_cards": {"home": 0, "away": 0},
+            }
+            for event in period_events:
+                team_id = event.get("team", {}).get("id")
+                team_key = "home" if team_id == home_id else "away"
+                
+                type, detail = (event.get("type") or "").lower(), (event.get("detail") or "").lower()
 
-        # Stats básicos
-        home_possession = str(get_stat(home_id, "Ball Possession")).replace("%", "")
-        away_possession = str(get_stat(away_id, "Ball Possession")).replace("%", "")
+                if type == "goal" or detail == "shot on goal":
+                    stats["shots_on_goal"][team_key] += 1
+                elif detail == "shot off goal" or detail == "missed penalty":
+                    stats["shots_off_goal"][team_key] += 1
+                elif type == "corner":
+                    stats["corners"][team_key] += 1
+                elif type == "foul":
+                    stats["fouls"][team_key] += 1
+                elif type == "card" and detail == "yellow card":
+                    stats["yellow_cards"][team_key] += 1
+                elif type == "card" and detail == "red card":
+                    stats["red_cards"][team_key] += 1
 
-        stats = {
-            "possession": {
-                "home": int(home_possession) if home_possession.isdigit() else 50,
-                "away": int(away_possession) if away_possession.isdigit() else 50,
-            },
-            "shots": {
-                "home": get_stat(home_id, "Total Shots"),
-                "away": get_stat(away_id, "Total Shots"),
-            },
-            "corners": {
-                "home": get_stat(home_id, "Corner Kicks"),
-                "away": get_stat(away_id, "Corner Kicks"),
-            },
-            "cards": {
-                "yellow_home": get_stat(home_id, "Yellow Cards"),
-                "red_home": get_stat(home_id, "Red Cards"),
-                "yellow_away": get_stat(away_id, "Yellow Cards"),
-                "red_away": get_stat(away_id, "Red Cards"),
-            },
+            stats["total_shots"]["home"] = stats["shots_on_goal"]["home"] + stats["shots_off_goal"]["home"]
+            stats["total_shots"]["away"] = stats["shots_on_goal"]["away"] + stats["shots_off_goal"]["away"]
+            return stats
+
+        # Separando eventos por tempo
+        first_half_events = [e for e in events if e.get("time", {}).get("elapsed", 999) <= 45]
+        second_half_events = [e for e in events if e.get("time", {}).get("elapsed", 0) > 45]
+
+        # Calculando estatísticas para cada período
+        full_game_stats = {
+            "possession": {"home": int(str(get_stat_value(home_id, "Ball Possession")).replace('%', '') or 50), "away": int(str(get_stat_value(away_id, "Ball Possession")).replace('%', '') or 50)},
+            "shots_on_goal": {"home": get_stat_value(home_id, "Shots on Goal"), "away": get_stat_value(away_id, "Shots on Goal")},
+            "total_shots": {"home": get_stat_value(home_id, "Total Shots"), "away": get_stat_value(away_id, "Total Shots")},
+            "corners": {"home": get_stat_value(home_id, "Corner Kicks"), "away": get_stat_value(away_id, "Corner Kicks")},
+            "fouls": {"home": get_stat_value(home_id, "Fouls"), "away": get_stat_value(away_id, "Fouls")},
+            "yellow_cards": {"home": get_stat_value(home_id, "Yellow Cards"), "away": get_stat_value(away_id, "Yellow Cards")},
+            "red_cards": {"home": get_stat_value(home_id, "Red Cards"), "away": get_stat_value(away_id, "Red Cards")},
         }
 
-        # --- Índice de Pressão ---
-        current_minute = fixture_data.get("status", {}).get("elapsed", 0)
-        last_10_min_events = [e for e in events_data if e.get("time", {}).get("elapsed", 0) > (current_minute - 10)]
+        first_half_stats_from_events = calculate_stats_for_period(first_half_events)
+        second_half_stats_from_events = calculate_stats_for_period(second_half_events)
 
-        weights = {
-            "shot on goal": 3,
-            "shot off goal": 1,
-            "corner kick": 2,
-            "dangerous attack": 2,
-            "goal": 5,
-        }
-
-        home_pressure, away_pressure = 0, 0
-        for event in last_10_min_events:
-            etype = (event.get("type") or "").lower() + " " + (event.get("detail") or "").lower()
-            tid = event.get("team", {}).get("id")
-
-            score = 0
-            for k, w in weights.items():
-                if k in etype:
-                    score = w
-                    break
-
-            if tid == home_id:
-                home_pressure += score
-            elif tid == away_id:
-                away_pressure += score
-
-        total_pressure = home_pressure + away_pressure
-        if total_pressure > 0:
-            home_pct = round(home_pressure / total_pressure * 100)
-            away_pct = 100 - home_pct
-        else:
-            home_pct, away_pct = 50, 50
-
-        dominant = "home" if home_pct > away_pct else "away" if away_pct > home_pct else "neutral"
+        current_minute = fixture.get("status", {}).get("elapsed", 0)
+        
+        # Estimativa de acréscimos
+        estimated_stoppage = {}
+        if 40 <= current_minute <= 55: # Janela para acréscimos do 1T
+            estimated_stoppage["first_half"] = estimate_stoppage_time(events, "1H")
+        if current_minute >= 85: # Janela para acréscimos do 2T
+            estimated_stoppage["second_half"] = estimate_stoppage_time(events, "2H")
 
         return {
             "minute": current_minute,
-            "score": f"{goals_data.get('home', 0)} - {goals_data.get('away', 0)}",
-            "stats": stats,
-            "indice_pressao": {"home": home_pct, "away": away_pct},
-            "lado_dominante": dominant,
+            "score": f"{goals.get('home', 0)} - {goals.get('away', 0)}",
+            "stats": {
+                "fullGame": full_game_stats,
+                "firstHalf": first_half_stats_from_events,
+                "secondHalf": second_half_stats_from_events
+            },
+            "estimated_stoppage": estimated_stoppage,
             "events": sorted([
-                {
-                    "minute": e.get("time", {}).get("elapsed", 0),
-                    "type": e.get("type", ""),
-                    "detail": f"{e.get('player', {}).get('name', '')} ({e.get('team', {}).get('name', '')})"
-                }
-                for e in events_data if e.get("time", {}).get("elapsed")
+                {"minute": e.get("time", {}).get("elapsed", 0), "type": f"{e.get('type', '')} - {e.get('detail', '')}", "detail": f"{e.get('player', {}).get('name', '')} ({e.get('team', {}).get('name', '')})"}
+                for e in events if e.get("time", {}).get("elapsed")
             ], key=lambda x: x["minute"], reverse=True),
         }
     except (requests.RequestException, IndexError) as e:
-        print(f"Erro ao buscar stats para o jogo {game_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro ao buscar estatísticas do jogo.")
