@@ -149,8 +149,8 @@ def jogos_aovivo(league: int = Query(None)):
     return out
 
 @app.get("/stats-aovivo/{game_id}")
-def stats_aovivo(game_id: int):
-    ck = f"radar_stats_{game_id}"
+def stats_aovivo(game_id: int, half: bool = Query(False)):
+    ck = f"radar_stats_{game_id}_{'half' if half else 'full'}"
     cached = _cache_get(ck)
     if cached is not None:
         return cached
@@ -165,7 +165,7 @@ def stats_aovivo(game_id: int):
         fixture_data = fixture_resp.get("response", [])
         fixture = fixture_data[0] if fixture_data else {}
 
-        # Stats
+        # Stats (full)
         stats_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id})
         full_stats = {"home": {}, "away": {}}
         try:
@@ -207,7 +207,7 @@ def stats_aovivo(game_id: int):
         away_id = fixture.get("teams", {}).get("away", {}).get("id")
         period_agg = events_to_period_stats(events, home_id, away_id)
 
-        # Preencher stats ausentes
+        # Preencher stats ausentes com agregados de eventos
         for side in ("home", "away"):
             if not full_stats.get(side):
                 full_stats[side] = {}
@@ -223,6 +223,11 @@ def stats_aovivo(game_id: int):
                 full_stats[side]["yellow_cards"] = period_agg["full"][side].get("yellow", 0)
             if full_stats[side].get("red_cards") in (None, 0):
                 full_stats[side]["red_cards"] = period_agg["full"][side].get("red", 0)
+
+        # Escolher stats finais: half ou full
+        statistics = full_stats
+        if half:
+            statistics = period_agg.get("first") or {"home": {}, "away": {}}
 
         # Estimated stoppage time
         estimated_extra = None
@@ -252,11 +257,7 @@ def stats_aovivo(game_id: int):
             "teams": fixture.get("teams", {}),
             "score": fixture.get("goals") or fixture.get("score") or {},
             "status": fixture.get("status") or fixture.get("fixture", {}).get("status", {}),
-            "statistics": {
-                "full": full_stats,
-                "firstHalf_derived": period_agg.get("first"),
-                "secondHalf_derived": period_agg.get("second")
-            },
+            "statistics": statistics,
             "events": processed,
             "estimated_extra": estimated_extra
         }
@@ -266,6 +267,7 @@ def stats_aovivo(game_id: int):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # --------------------------
 # Aggregation por período
@@ -310,3 +312,4 @@ def events_to_period_stats(events, home_id, away_id):
             # não conta como stat, mas mantém no evento
             pass
     return agg
+
