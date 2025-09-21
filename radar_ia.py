@@ -13,10 +13,10 @@ app = FastAPI(title="Radar IA - V5.1 Refatorado")
 origins = ["https://jean-rgsocd.github.io", "http://127.0.0.1:5500", "http://localhost:5500"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- Configuração da API-Sports (COM CABEÇALHO CORRIGIDO) ---
+# --- Configuração da API-Sports (COM URL CORRIGIDA PARA RAPIDAPI) ---
 API_SPORTS_KEY = "85741d1d66385996de506a07e3f527d1"
-API_SPORTS_URL = "https://v3.football.api-sports.io"
-HEADERS = {"x-rapidapi-key": API_SPORTS_KEY} # AJUSTE APLICADO AQUI
+API_SPORTS_URL = "https://api-football-v1.p.rapidapi.com/v3" # AJUSTE APLICADO AQUI
+HEADERS = {"x-rapidapi-key": API_SPORTS_KEY}
 cache: Dict[str, Dict[str, Any]] = {}
 
 # --- Endpoint de Jogos ao vivo ---
@@ -134,3 +134,4 @@ def get_live_stats_for_game(game_id: int):
         }
     except requests.RequestException:
         raise HTTPException(status_code=503, detail="Erro ao buscar estatísticas do jogo na API de esportes.")
+
