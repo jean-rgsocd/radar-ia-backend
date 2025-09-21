@@ -165,6 +165,9 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
         fixture_data = fixture_resp.get("response", [])
         fixture = fixture_data[0] if fixture_data else {}
 
+        home_id = fixture.get("teams", {}).get("home", {}).get("id")
+        away_id = fixture.get("teams", {}).get("away", {}).get("id")
+
         # Stats (full)
         stats_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id})
         full_stats = {"home": {}, "away": {}}
@@ -173,8 +176,6 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
             for team_stats in stats_list:
                 team = team_stats.get("team") or {}
                 tid = team.get("id")
-                home_id = fixture.get("teams", {}).get("home", {}).get("id")
-                away_id = fixture.get("teams", {}).get("away", {}).get("id")
                 side = "home" if tid == home_id else ("away" if tid == away_id else None)
                 tmp = {}
 
@@ -223,11 +224,9 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
         processed.sort(key=lambda x: x["_sort"], reverse=True)
 
         # Period stats
-        home_id = fixture.get("teams", {}).get("home", {}).get("id")
-        away_id = fixture.get("teams", {}).get("away", {}).get("id")
         period_agg = events_to_period_stats(events, home_id, away_id)
 
-        # Preencher stats ausentes com agregados de eventos
+        # Preencher stats ausentes com fallback de eventos
         for side in ("home", "away"):
             if not full_stats.get(side):
                 full_stats[side] = {}
@@ -249,7 +248,7 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
         if half:
             statistics = period_agg.get("first") or {"home": {}, "away": {}}
 
-        # Estimated stoppage time
+        # Estimativa de acréscimos
         estimated_extra = None
         try:
             elapsed = fixture.get("fixture", {}).get("status", {}).get("elapsed")
@@ -328,9 +327,4 @@ def events_to_period_stats(events, home_id, away_id):
                 agg[period][side]["red"] += 1; agg["full"][side]["red"] += 1
             else:
                 agg[period][side]["yellow"] += 1; agg["full"][side]["yellow"] += 1
-        if "var" in typ or "var" in detail:
-            # não conta como stat, mas mantém no evento
-            pass
     return agg
-
-
