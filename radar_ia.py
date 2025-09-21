@@ -1,239 +1,312 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const RADAR_API = "https://radar-ia-backend.onrender.com";
-  const radarSection = document.getElementById("radar-ia-section");
-  if (!radarSection) return;
+# radar_ia.py
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+import requests, os, traceback, time
 
-  const leagueSelect = document.getElementById("radar-league-select");
-  const gameSelect   = document.getElementById("radar-game-select");
-  const dashboard    = document.getElementById("radar-dashboard");
-  const scoreEl      = document.getElementById("radar-score");
-  const minuteEl     = document.getElementById("radar-minute");
-  const homeTeamEl   = document.getElementById("home-team-name");
-  const awayTeamEl   = document.getElementById("away-team-name");
-  const eventsEl     = document.getElementById("radar-events");
-  const stoppageBox  = document.getElementById("stoppage-time-prediction");
-  const stoppageVal  = document.getElementById("stoppage-time-value");
-  const tabs         = document.querySelectorAll(".period-btn");
+app = FastAPI(title="Radar IA - Futebol")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
-  const statPossEl   = document.getElementById("stat-possession");
-  const statShotsEl  = document.getElementById("stat-shots");
-  const statCornersEl= document.getElementById("stat-corners");
-  const statFoulsEl  = document.getElementById("stat-fouls");
-  const statYellowEl = document.getElementById("stat-yellow-cards");
-  const statRedEl    = document.getElementById("stat-red-cards");
+API_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
+API_CFG = {"football": {"base": "https://v3.football.api-sports.io", "host": "v3.football.api-sports.io"}}
 
-  let currentGameId = null;
-  let currentPeriod = "full"; // "half" ou "full"
-  let updateInterval = null;
-  let latestData = null;
-  let halfTimeStats = null; // snapshot do 1º tempo
+CACHE_TTL = 8
+_cache = {}
 
-  // util: pegar estatística por chave
-  function mapKeysLower(obj = {}) {
-    const m = {};
-    Object.keys(obj || {}).forEach(k => { m[k.toLowerCase()] = obj[k]; });
-    return m;
-  }
-  function pickStat(sideObj, candidates = []) {
-    if (!sideObj) return null;
-    const m = mapKeysLower(sideObj);
-    for (const c of candidates) {
-      const key = c.toLowerCase();
-      if (m[key] !== undefined && m[key] !== null) return m[key];
+# --------------------------
+# Helpers
+# --------------------------
+def _cache_get(key):
+    rec = _cache.get(key)
+    if not rec:
+        return None
+    if time.time() - rec["ts"] > CACHE_TTL:
+        _cache.pop(key, None)
+        return None
+    return rec["data"]
+
+def _cache_set(key, data):
+    _cache[key] = {"ts": time.time(), "data": data}
+
+def headers_for():
+    cfg = API_CFG["football"]
+    return {"x-rapidapi-key": API_KEY, "x-rapidapi-host": cfg["host"]}
+
+def safe_get(url, headers, params=None, timeout=20):
+    try:
+        r = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print("safe_get error", url, params, e)
+        return None
+
+def _compute_sort_key(ev):
+    try:
+        elapsed = int(ev.get("time", {}).get("elapsed") or 0)
+    except:
+        elapsed = 0
+    try:
+        second = int(ev.get("time", {}).get("second") or 0)
+    except:
+        second = 0
+    try:
+        extra = int(ev.get("time", {}).get("extra") or 0)
+    except:
+        extra = 0
+    return (elapsed + extra) * 60 + second
+
+def _format_display_time(ev):
+    t = ev.get("time", {}) or {}
+    elapsed = t.get("elapsed")
+    second = t.get("second")
+    extra = t.get("extra")
+    if elapsed is None:
+        return "-"
+    sec_part = f'{int(second):02d}"' if second is not None else ""
+    if extra:
+        return f"{elapsed}+{extra}'{sec_part}"
+    return f"{elapsed}'{sec_part}"
+
+def classify_event(ev):
+    t = (ev.get("type") or "").lower()
+    d = (ev.get("detail") or "").lower()
+    if "goal" in t or "goal" in d: return "Goal"
+    if "card" in t or "card" in d:
+        if "yellow" in d: return "Yellow Card"
+        if "red" in d: return "Red Card"
+        return "Card"
+    if "substitution" in t or "sub" in d: return "Substitution"
+    if "corner" in t or "corner" in d: return "Corner"
+    if "foul" in t or "foul" in d: return "Foul"
+    if "shot" in t or "shot" in d or "on target" in d: return "Shot"
+    if "var" in t or "var" in d: return "VAR"
+    return ev.get("type") or ev.get("detail") or "Other"
+
+def try_int(v):
+    try:
+        if v is None: return None
+        if isinstance(v, str) and "%" in v:
+            return int(v.replace("%", "").strip())
+        return int(v)
+    except:
+        try:
+            return int(float(v))
+        except:
+            return v
+
+# --------------------------
+# Routes
+# --------------------------
+@app.get("/ligas")
+def ligas():
+    ck = "radar_ligas_live"
+    c = _cache_get(ck)
+    if c is not None:
+        return c
+    cfg = API_CFG["football"]
+    resp = safe_get(f"{cfg['base']}/fixtures", headers_for(), params={"live": "all"})
+    if not resp:
+        return []
+    data = resp.get("response", [])
+    leagues = {}
+    for f in data:
+        l = f.get("league") or {}
+        leagues[l.get("id")] = {"id": l.get("id"), "name": l.get("name"), "country": l.get("country")}
+    out = list(leagues.values())
+    _cache_set(ck, out)
+    return out
+
+@app.get("/jogos-aovivo")
+def jogos_aovivo(league: int = Query(None)):
+    ck = f"radar_jogos_live_{league or 'all'}"
+    c = _cache_get(ck)
+    if c is not None:
+        return c
+    cfg = API_CFG["football"]
+    params = {"live": "all"}
+    if league:
+        params["league"] = league
+    resp = safe_get(f"{cfg['base']}/fixtures", headers_for(), params=params)
+    if not resp:
+        return []
+    data = resp.get("response", [])
+    out = []
+    for f in data:
+        out.append({
+            "game_id": f.get("fixture", {}).get("id"),
+            "title": f"{f.get('teams', {}).get('home', {}).get('name')} vs {f.get('teams', {}).get('away', {}).get('name')} ({f.get('league', {}).get('name')})",
+            "league": f.get("league"),
+            "teams": f.get("teams"),
+            "fixture": f.get("fixture"),
+            "status": f.get("fixture", {}).get("status")
+        })
+    _cache_set(ck, out)
+    return out
+
+@app.get("/stats-aovivo/{game_id}")
+def stats_aovivo(game_id: int):
+    ck = f"radar_stats_{game_id}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    try:
+        base = API_CFG["football"]["base"]
+        headers = headers_for()
+
+        # Fixture
+        fixture_resp = safe_get(f"{base}/fixtures", headers, params={"id": game_id})
+        if not fixture_resp:
+            raise HTTPException(status_code=404, detail="Fixture not found")
+        fixture_data = fixture_resp.get("response", [])
+        fixture = fixture_data[0] if fixture_data else {}
+
+        # Stats
+        stats_resp = safe_get(f"{base}/fixtures/statistics", headers, params={"fixture": game_id})
+        full_stats = {"home": {}, "away": {}}
+        try:
+            stats_list = stats_resp.get("response", [])
+            for team_stats in stats_list:
+                team = team_stats.get("team") or {}
+                tid = team.get("id")
+                home_id = fixture.get("teams", {}).get("home", {}).get("id")
+                away_id = fixture.get("teams", {}).get("away", {}).get("id")
+                side = "home" if tid == home_id else ("away" if tid == away_id else None)
+                tmp = {}
+                for s in (team_stats.get("statistics") or []):
+                    k = (s.get("type") or s.get("name") or "").strip()
+                    tmp[k] = try_int(s.get("value"))
+                if side:
+                    full_stats[side].update(tmp)
+        except Exception as e:
+            print("parse stats error", e)
+
+        # Events
+        events_resp = safe_get(f"{base}/fixtures/events", headers, params={"fixture": game_id})
+        events = events_resp.get("response", []) if events_resp else []
+        processed = []
+        for ev in events:
+            processed.append({
+                "display_time": _format_display_time(ev),
+                "category": classify_event(ev),
+                "type": ev.get("type"),
+                "detail": ev.get("detail"),
+                "player": ev.get("player", {}).get("name") if ev.get("player") else None,
+                "team": ev.get("team", {}).get("name") if ev.get("team") else None,
+                "raw": ev,
+                "_sort": _compute_sort_key(ev)
+            })
+        processed.sort(key=lambda x: x["_sort"], reverse=True)
+
+        # Period stats
+        home_id = fixture.get("teams", {}).get("home", {}).get("id")
+        away_id = fixture.get("teams", {}).get("away", {}).get("id")
+        period_agg = events_to_period_stats(events, home_id, away_id)
+
+        # Preencher stats ausentes
+        for side in ("home", "away"):
+            if not full_stats.get(side):
+                full_stats[side] = {}
+            if full_stats[side].get("total_shots") in (None, 0):
+                full_stats[side]["total_shots"] = period_agg["full"][side].get("shots", 0)
+            if full_stats[side].get("shots_on_goal") in (None, 0):
+                full_stats[side]["shots_on_goal"] = period_agg["full"][side].get("shots_on_target", 0)
+            if full_stats[side].get("corners") in (None, 0):
+                full_stats[side]["corners"] = period_agg["full"][side].get("corners", 0)
+            if full_stats[side].get("fouls") in (None, 0):
+                full_stats[side]["fouls"] = period_agg["full"][side].get("fouls", 0)
+            if full_stats[side].get("yellow_cards") in (None, 0):
+                full_stats[side]["yellow_cards"] = period_agg["full"][side].get("yellow", 0)
+            if full_stats[side].get("red_cards") in (None, 0):
+                full_stats[side]["red_cards"] = period_agg["full"][side].get("red", 0)
+
+        # Estimated stoppage time
+        estimated_extra = None
+        try:
+            elapsed = fixture.get("fixture", {}).get("status", {}).get("elapsed")
+            if elapsed is not None:
+                recent_count = 0
+                for p in processed:
+                    rv = p.get("raw", {})
+                    et = rv.get("time", {}).get("elapsed") or 0
+                    if (int(elapsed) - int(et)) <= 20:
+                        cat = p.get("category", "").lower()
+                        if "substitution" in cat or "sub" in cat: recent_count += 1
+                        if "card" in cat: recent_count += 1
+                        if "injury" in cat: recent_count += 2
+                minutes = round(recent_count * 0.8) if recent_count > 0 else None
+                if not minutes:
+                    if 40 <= int(elapsed) <= 45: minutes = 3
+                    elif 80 <= int(elapsed) <= 90: minutes = 4
+                if minutes:
+                    estimated_extra = max(1, min(7, minutes))
+        except:
+            estimated_extra = None
+
+        result = {
+            "fixture": fixture,
+            "teams": fixture.get("teams", {}),
+            "score": fixture.get("goals") or fixture.get("score") or {},
+            "status": fixture.get("status") or fixture.get("fixture", {}).get("status", {}),
+            "statistics": {
+                "full": full_stats,
+                "firstHalf_derived": period_agg.get("first"),
+                "secondHalf_derived": period_agg.get("second")
+            },
+            "events": processed,
+            "estimated_extra": estimated_extra
+        }
+
+        _cache_set(ck, result)
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --------------------------
+# Aggregation por período
+# --------------------------
+def events_to_period_stats(events, home_id, away_id):
+    agg = {
+        "first": {"home": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
+                  "away": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0}},
+        "second": {"home": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
+                   "away": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0}},
+        "full": {"home": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
+                 "away": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0}}
     }
-    return null;
-  }
-
-  function iconFor(cat = "") {
-    const c = (cat || "").toLowerCase();
-    if (c.includes("goal")) return "⚽";
-    if (c.includes("penalty")) return "🥅";
-    if (c.includes("freekick") || c.includes("free kick")) return "🎯";
-    if (c.includes("yellow")) return "🟨";
-    if (c.includes("red")) return "🟥";
-    if (c.includes("sub")) return "🔁";
-    if (c.includes("shot") || c.includes("on target")) return "🎯";
-    if (c.includes("corner")) return "🚩";
-    if (c.includes("foul")) return "🛑";
-    return "•";
-  }
-
-  function renderEvents(events = []) {
-    eventsEl.innerHTML = "";
-    if (!events || events.length === 0) {
-      eventsEl.innerHTML = "<li>Nenhum evento recente</li>";
-      return;
-    }
-    events = events.slice().sort((a,b) => (b._sort || 0) - (a._sort || 0));
-    events.forEach(ev => {
-      const li = document.createElement("li");
-      li.className = "flex items-start gap-2 py-1";
-      const timeLabel = ev.display_time || "-";
-      const icon = iconFor(ev.category || ev.type || ev.detail || "");
-      const detail = ev.detail ? ` - ${ev.detail}` : "";
-      const player = ev.player ? ` - ${ev.player}` : "";
-      const team = ev.team ? ` (${ev.team})` : "";
-      li.innerHTML = `<span class="font-semibold text-slate-200">${timeLabel}</span>
-                <span class="ml-2">${icon}</span>
-                <div class="ml-2 text-sm text-slate-300">${(ev.type || '')}${detail}${player}${team}</div>`;
-      eventsEl.appendChild(li);
-    });
-  }
-
-  // candidatos
-  const possessionCandidates = ["possession","ball possession","ball possession%","possession%","possession %"];
-  const totalShotsCandidates = ["total_shots","total shots","totalshots","total shots"];
-  const onTargetCandidates   = ["shots_on_goal","shots on goal","shots_on_target","shots on target"];
-  const cornersCandidates    = ["corner kicks","corner_kicks","cornerkicks","corners","corner"];
-  const foulsCandidates      = ["fouls","foul"];
-  const yellowCandidates     = ["yellow_cards","yellow cards","yellow card","yellow"];
-  const redCandidates        = ["red_cards","red cards","red card","red"];
-
-  function getVal(sideObj, candidates) {
-    return pickStat(sideObj, candidates) ?? "-";
-  }
-
-  function setStatsPanel(statsObj = {}) {
-    if (!statsObj || !statsObj.home || !statsObj.away) {
-      [statPossEl, statShotsEl, statCornersEl, statFoulsEl, statYellowEl, statRedEl]
-        .forEach(el => el && (el.textContent = "-"));
-      return;
-    }
-
-    const home = statsObj.home || {};
-    const away = statsObj.away || {};
-
-    statPossEl.textContent   = `${getVal(home, possessionCandidates)} / ${getVal(away, possessionCandidates)}`;
-    statShotsEl.textContent  = `${getVal(home, totalShotsCandidates)} (${getVal(home, onTargetCandidates)}) / ${getVal(away, totalShotsCandidates)} (${getVal(away, onTargetCandidates)})`;
-    statCornersEl.textContent= `${getVal(home, cornersCandidates)} / ${getVal(away, cornersCandidates)}`;
-    statFoulsEl.textContent  = `${getVal(home, foulsCandidates)} / ${getVal(away, foulsCandidates)}`;
-    statYellowEl.textContent = `${getVal(home, yellowCandidates)} / ${getVal(away, yellowCandidates)}`;
-    statRedEl.textContent    = `${getVal(home, redCandidates)} / ${getVal(away, redCandidates)}`;
-  }
-
-  async function loadLeagues() {
-    if (!leagueSelect) return;
-    leagueSelect.disabled = true;
-    leagueSelect.innerHTML = `<option>Carregando ligas...</option>`;
-    try {
-      const r = await fetch(`${RADAR_API}/ligas`);
-      const data = await r.json();
-      leagueSelect.innerHTML = `<option value="">Escolha uma liga</option>`;
-      data.forEach(l => leagueSelect.add(new Option(`${l.name} - ${l.country || ''}`, l.id)));
-      leagueSelect.disabled = false;
-    } catch {
-      leagueSelect.innerHTML = `<option value="">Erro ao carregar ligas</option>`;
-    }
-  }
-
-  async function loadGames(leagueId = null) {
-    if (!gameSelect) return;
-    gameSelect.disabled = true;
-    gameSelect.innerHTML = `<option>Carregando jogos ao vivo...</option>`;
-    try {
-      const url = leagueId
-        ? `${RADAR_API}/jogos-aovivo?league=${encodeURIComponent(leagueId)}`
-        : `${RADAR_API}/jogos-aovivo`;
-      const r = await fetch(url);
-      const data = await r.json();
-      if (!data || data.length === 0) {
-        gameSelect.innerHTML = `<option value="">Nenhum jogo ao vivo</option>`;
-        gameSelect.disabled = true;
-        return;
-      }
-      gameSelect.innerHTML = `<option value="">Selecione um jogo</option>`;
-      data.forEach(g => gameSelect.add(new Option(g.title, g.game_id)));
-      gameSelect.disabled = false;
-    } catch {
-      gameSelect.innerHTML = `<option value="">Erro ao carregar jogos</option>`;
-    }
-  }
-
-  async function fetchStats(gameId) {
-    const url = `${RADAR_API}/stats-aovivo/${encodeURIComponent(gameId)}?sport=football`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error("Erro ao buscar stats");
-    return await r.json();
-  }
-
-  async function fetchAndRender(gameId) {
-    if (!gameId) return;
-    try {
-      const data = await fetchStats(gameId);
-      latestData = data;
-
-      const fixture = data.fixture || {};
-      const teams = data.teams || {};
-      homeTeamEl.textContent = teams.home?.name || "Time Casa";
-      awayTeamEl.textContent = teams.away?.name || "Time Fora";
-
-      scoreEl.textContent = `${data.score?.home ?? fixture.goals?.home ?? "-"} - ${data.score?.away ?? fixture.goals?.away ?? "-"}`;
-      minuteEl.textContent = data.status?.elapsed ? `${data.status.elapsed}'` : "-";
-
-      if (data.estimated_extra) {
-        stoppageBox.classList.remove("hidden");
-        stoppageVal.textContent = data.estimated_extra;
-      } else {
-        stoppageBox.classList.add("hidden");
-      }
-
-      const fullStats = data.statistics || {};
-
-      // congela snapshot no intervalo
-      if (data.status?.short === "HT" && !halfTimeStats) {
-        halfTimeStats = JSON.parse(JSON.stringify(fullStats));
-      }
-
-      if (currentPeriod === "half") {
-        setStatsPanel(halfTimeStats || fullStats);
-      } else {
-        setStatsPanel(fullStats);
-      }
-
-      renderEvents(data.events || []);
-      dashboard.classList.remove("hidden");
-    } catch (err) {
-      console.error("fetchAndRender error", err);
-      dashboard.classList.add("hidden");
-    }
-  }
-
-  // eventos
-  gameSelect?.addEventListener("change", (ev) => {
-    const id = ev.target.value;
-    clearInterval(updateInterval);
-    if (!id) {
-      dashboard.classList.add("hidden");
-      return;
-    }
-    currentGameId = id;
-    fetchAndRender(currentGameId);
-    updateInterval = setInterval(() => fetchAndRender(currentGameId), 60000);
-  });
-
-  leagueSelect?.addEventListener("change", (ev) => {
-    const lid = ev.target.value;
-    if (!lid) return;
-    loadGames(lid);
-  });
-
-  tabs?.forEach(btn => {
-    btn.addEventListener("click", () => {
-      tabs.forEach(b => b.classList.remove("bg-cyan-600", "text-white"));
-      btn.classList.add("bg-cyan-600", "text-white");
-      const p = btn.dataset.period;
-      currentPeriod = (p === "half") ? "half" : "full";
-      if (currentGameId) fetchAndRender(currentGameId);
-    });
-  });
-
-  const obs = new IntersectionObserver(entries => {
-    if (entries[0].isIntersecting) {
-      loadLeagues();
-      obs.disconnect();
-    }
-  }, { threshold: 0.1 });
-  obs.observe(radarSection);
-});
-
-
+    for ev in events:
+        team = ev.get("team") or {}
+        team_id = team.get("id")
+        side = "home" if team_id == home_id else "away"
+        elapsed = ev.get("time", {}).get("elapsed")
+        period = "full"
+        try:
+            if elapsed is not None:
+                e = int(elapsed)
+                period = "first" if e <= 45 else "second"
+        except:
+            period = "full"
+        typ = (ev.get("type") or "").lower()
+        detail = (ev.get("detail") or "").lower()
+        if "shot" in typ or "shot" in detail or "goal" in typ or "goal" in detail:
+            agg[period][side]["shots"] += 1; agg["full"][side]["shots"] += 1
+            if "on target" in detail or "goal" in typ or "goal" in detail:
+                agg[period][side]["shots_on_target"] += 1; agg["full"][side]["shots_on_target"] += 1
+        if "corner" in typ or "corner" in detail:
+            agg[period][side]["corners"] += 1; agg["full"][side]["corners"] += 1
+        if "foul" in typ or "foul" in detail:
+            agg[period][side]["fouls"] += 1; agg["full"][side]["fouls"] += 1
+        if "card" in typ or "yellow" in detail or "red" in detail:
+            if "red" in detail:
+                agg[period][side]["red"] += 1; agg["full"][side]["red"] += 1
+            else:
+                agg[period][side]["yellow"] += 1; agg["full"][side]["yellow"] += 1
+        if "var" in typ or "var" in detail:
+            # não conta como stat, mas mantém no evento
+            pass
+    return agg
