@@ -1,18 +1,18 @@
 # Filename: radar_ia.py
-# Versão 11.0 - FINAL (Autenticação Definitiva)
+# Versão FINAL - Autenticação Definitiva
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 
-app = FastAPI(title="Radar IA - API Definitiva V11.0")
+app = FastAPI(title="Radar IA - API Definitiva")
 
 # --- CORS ---
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- CONFIGURAÇÃO DA API-SPORTS (SEGUINDO A DOCUMENTAÇÃO) ---
+# --- CONFIGURAÇÃO DA API-SPORTS (SEGUINDO A DOCUMENTAÇÃO OFICIAL) ---
 API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
 API_HOST = "v3.football.api-sports.io"
 API_URL = f"https://{API_HOST}"
@@ -23,17 +23,12 @@ HEADERS = {
     'x-rapidapi-host': API_HOST
 }
 
-# --- ROTA DE TESTE NA RAIZ ---
-@app.get("/")
-def read_root():
-    return {"status": "Radar IA Backend está online!"}
-
 # --- ENDPOINTS DA API ---
 @app.get("/jogos-aovivo")
 def get_live_games():
     params = {"live": "all"}
     try:
-        response = requests.get(f"{API_URL}/fixtures", headers=HEADERS, params=params, timeout=20)
+        response = requests.get(f"{API_URL}/fixtures", headers=HEADERS, params=params, timeout=30)
         response.raise_for_status()
         data = response.json().get("response", [])
         
@@ -49,11 +44,12 @@ def get_live_games():
 def get_live_stats_for_game(game_id: int):
     params = {"id": game_id}
     try:
-        response = requests.get(f"{API_URL}/fixtures", headers=HEADERS, params=params, timeout=20)
+        response = requests.get(f"{API_URL}/fixtures", headers=HEADERS, params=params, timeout=30)
         response.raise_for_status()
         data = response.json().get("response", [])
         if not data:
             raise HTTPException(status_code=404, detail="Jogo não encontrado.")
+        # Retorna o objeto completo do fixture para o frontend processar
         return data[0]
     except requests.RequestException as e:
         print(f"ERRO CRÍTICO no Radar IA ao buscar estatísticas do jogo {game_id}: {e}")
