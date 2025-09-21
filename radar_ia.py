@@ -60,18 +60,26 @@ def _format_display_time(ev):
     if extra: return f"{elapsed}+{extra}'{sec_part}"
     return f"{elapsed}'{sec_part}"
 
-def classify_event(ev):
+ef classify_event(ev):
     t = (ev.get("type") or "").lower()
     d = (ev.get("detail") or "").lower()
-    if "goal" in t or "goal" in d: return "Goal"
-    if "card" in t or "card" in d:
-        if "yellow" in d: return "Yellow Card"
-        if "red" in d: return "Red Card"
+
+    if "goal" in t or "goal" in d: 
+        return "Goal"
+    if "yellow" in d: 
+        return "Yellow Card"
+    if "red" in d: 
+        return "Red Card"
+    if "card" in t: 
         return "Card"
-    if "substitution" in t or "sub" in d: return "Substitution"
-    if "corner" in t or "corner" in d: return "Corner"
-    if "foul" in t or "foul" in d: return "Foul"
-    if "shot" in t or "shot" in d: return "Shot"
+    if "corner" in t or "corner" in d: 
+        return "Corner"
+    if "foul" in t or "foul" in d: 
+        return "Foul"
+    if "substitution" in t or "sub" in d: 
+        return "Substitution"
+    if "shot" in t or "shot" in d: 
+        return "Shot"
     return ev.get("type") or ev.get("detail") or "Other"
 
 # ---------------- PERIOD AGGREGATION ----------------
@@ -84,6 +92,7 @@ def events_to_period_stats(events, home_id, away_id):
         "full": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
                  "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}}
     }
+
     for ev in events:
         team = ev.get("team") or {}
         team_id = team.get("id")
@@ -99,19 +108,34 @@ def events_to_period_stats(events, home_id, away_id):
 
         typ = (ev.get("type") or "").lower()
         detail = (ev.get("detail") or "").lower()
+
+        # Shots
         if "shot" in typ or "shot" in detail or "goal" in typ or "goal" in detail:
-            agg[period][side]["shots"] += 1; agg["full"][side]["shots"] += 1
+            agg[period][side]["shots"] += 1
+            agg["full"][side]["shots"] += 1
             if "on target" in detail or "goal" in typ or "goal" in detail:
-                agg[period][side]["shots_on_target"] += 1; agg["full"][side]["shots_on_target"] += 1
+                agg[period][side]["shots_on_target"] += 1
+                agg["full"][side]["shots_on_target"] += 1
+
+        # Corners
         if "corner" in typ or "corner" in detail:
-            agg[period][side]["corners"] += 1; agg["full"][side]["corners"] += 1
+            agg[period][side]["corners"] += 1
+            agg["full"][side]["corners"] += 1
+
+        # Fouls
         if "foul" in typ or "foul" in detail:
-            agg[period][side]["fouls"] += 1; agg["full"][side]["fouls"] += 1
+            agg[period][side]["fouls"] += 1
+            agg["full"][side]["fouls"] += 1
+
+        # Cards
         if "card" in typ or "yellow" in detail or "red" in detail:
             if "red" in detail:
-                agg[period][side]["red"] += 1; agg["full"][side]["red"] += 1
-            else:
-                agg[period][side]["yellow"] += 1; agg["full"][side]["yellow"] += 1
+                agg[period][side]["red"] += 1
+                agg["full"][side]["red"] += 1
+            elif "yellow" in detail:
+                agg[period][side]["yellow"] += 1
+                agg["full"][side]["yellow"] += 1
+
     return agg
 
 # ---------------- ENDPOINTS ----------------
@@ -256,3 +280,4 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
