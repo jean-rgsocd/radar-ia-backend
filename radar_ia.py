@@ -183,7 +183,6 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
                     k = (s.get("type") or s.get("name") or "").strip().lower()
                     v = try_int(s.get("value"))
 
-                    # 🔑 Mapeamento padronizado
                     if "total shots" in k:
                         tmp["total_shots"] = v
                     elif "shots on goal" in k:
@@ -238,6 +237,10 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
                 full_stats[side]["total_shots"] = period_agg["full"][side].get("shots", 0)
             if full_stats[side].get("shots_on_goal") in (None, 0):
                 full_stats[side]["shots_on_goal"] = period_agg["full"][side].get("shots_on_target", 0)
+            if full_stats[side].get("shots_off_goal") in (None, 0):
+                full_stats[side]["shots_off_goal"] = period_agg["full"][side].get("shots_off_goal", 0)
+            if full_stats[side].get("shots_blocked") in (None, 0):
+                full_stats[side]["shots_blocked"] = period_agg["full"][side].get("shots_blocked", 0)
             if full_stats[side].get("corners") in (None, 0):
                 full_stats[side]["corners"] = period_agg["full"][side].get("corners", 0)
             if full_stats[side].get("fouls") in (None, 0):
@@ -247,7 +250,7 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
             if full_stats[side].get("red_cards") in (None, 0):
                 full_stats[side]["red_cards"] = period_agg["full"][side].get("red", 0)
 
-        # Escolher stats finais: half ou full
+        # Escolher stats finais
         statistics = full_stats
         if half:
             statistics = period_agg.get("first") or {"home": {}, "away": {}}
@@ -268,8 +271,10 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
                         if "injury" in cat: recent_count += 2
                 minutes = round(recent_count * 0.8) if recent_count > 0 else None
                 if not minutes:
-                    if 40 <= int(elapsed) <= 45: minutes = 3
-                    elif 80 <= int(elapsed) <= 90: minutes = 4
+                    if 35 <= int(elapsed) <= 45:
+                        minutes = 3
+                    elif 80 <= int(elapsed) <= 90:
+                        minutes = 4
                 if minutes:
                     estimated_extra = max(1, min(7, minutes))
         except:
@@ -297,12 +302,18 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
 # --------------------------
 def events_to_period_stats(events, home_id, away_id):
     agg = {
-        "first": {"home": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
-                  "away": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0}},
-        "second": {"home": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
-                   "away": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0}},
-        "full": {"home": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
-                 "away": {"shots": 0, "shots_on_target": 0, "corners": 0, "fouls": 0, "yellow": 0, "red": 0}}
+        "first": {"home": {"shots": 0, "shots_on_target": 0, "shots_off_goal": 0, "shots_blocked": 0,
+                           "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
+                  "away": {"shots": 0, "shots_on_target": 0, "shots_off_goal": 0, "shots_blocked": 0,
+                           "corners": 0, "fouls": 0, "yellow": 0, "red": 0}},
+        "second": {"home": {"shots": 0, "shots_on_target": 0, "shots_off_goal": 0, "shots_blocked": 0,
+                            "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
+                   "away": {"shots": 0, "shots_on_target": 0, "shots_off_goal": 0, "shots_blocked": 0,
+                            "corners": 0, "fouls": 0, "yellow": 0, "red": 0}},
+        "full": {"home": {"shots": 0, "shots_on_target": 0, "shots_off_goal": 0, "shots_blocked": 0,
+                          "corners": 0, "fouls": 0, "yellow": 0, "red": 0},
+                 "away": {"shots": 0, "shots_on_target": 0, "shots_off_goal": 0, "shots_blocked": 0,
+                          "corners": 0, "fouls": 0, "yellow": 0, "red": 0}}
     }
     for ev in events:
         team = ev.get("team") or {}
@@ -322,6 +333,10 @@ def events_to_period_stats(events, home_id, away_id):
             agg[period][side]["shots"] += 1; agg["full"][side]["shots"] += 1
             if "on target" in detail or "goal" in typ or "goal" in detail:
                 agg[period][side]["shots_on_target"] += 1; agg["full"][side]["shots_on_target"] += 1
+            if "off target" in detail:
+                agg[period][side]["shots_off_goal"] += 1; agg["full"][side]["shots_off_goal"] += 1
+            if "blocked" in detail:
+                agg[period][side]["shots_blocked"] += 1; agg["full"][side]["shots_blocked"] += 1
         if "corner" in typ or "corner" in detail:
             agg[period][side]["corners"] += 1; agg["full"][side]["corners"] += 1
         if "foul" in typ or "foul" in detail:
