@@ -56,9 +56,7 @@ def estimate_stoppage_time(events: List[Dict[str, Any]], period: str) -> int:
     stoppage_seconds += substitutions * 30
     stoppage_seconds += cards * 15
     
-    # Simula tempo para lesões e outras paradas (valor aleatório pequeno)
-    # Por exemplo, adiciona 1 minuto se houver mais de 5 eventos significativos
-    if len(period_events) > 5:
+    if len(period_events) > 7: # Adiciona um pouco mais por "cera" se o jogo for muito parado
         stoppage_seconds += 60
 
     return round(stoppage_seconds / 60)
@@ -91,73 +89,36 @@ def get_live_stats_for_game(game_id: int):
             return 0
 
         def calculate_stats_for_period(period_events):
-            stats = {
-                "shots_on_goal": {"home": 0, "away": 0},
-                "shots_off_goal": {"home": 0, "away": 0},
-                "total_shots": {"home": 0, "away": 0},
-                "corners": {"home": 0, "away": 0},
-                "fouls": {"home": 0, "away": 0},
-                "yellow_cards": {"home": 0, "away": 0},
-                "red_cards": {"home": 0, "away": 0},
-            }
+            stats = {"shots_on_goal": {"home": 0, "away": 0}, "shots_off_goal": {"home": 0, "away": 0}, "total_shots": {"home": 0, "away": 0}, "corners": {"home": 0, "away": 0}, "fouls": {"home": 0, "away": 0}, "yellow_cards": {"home": 0, "away": 0}, "red_cards": {"home": 0, "away": 0}}
             for event in period_events:
                 team_id = event.get("team", {}).get("id")
                 team_key = "home" if team_id == home_id else "away"
-                
                 type, detail = (event.get("type") or "").lower(), (event.get("detail") or "").lower()
-
-                if type == "goal" or detail == "shot on goal":
-                    stats["shots_on_goal"][team_key] += 1
-                elif detail == "shot off goal" or detail == "missed penalty":
-                    stats["shots_off_goal"][team_key] += 1
-                elif type == "corner":
-                    stats["corners"][team_key] += 1
-                elif type == "foul":
-                    stats["fouls"][team_key] += 1
-                elif type == "card" and detail == "yellow card":
-                    stats["yellow_cards"][team_key] += 1
-                elif type == "card" and detail == "red card":
-                    stats["red_cards"][team_key] += 1
-
+                if type == "goal" or detail == "shot on goal": stats["shots_on_goal"][team_key] += 1
+                elif detail == "shot off goal" or detail == "missed penalty": stats["shots_off_goal"][team_key] += 1
+                elif type == "corner": stats["corners"][team_key] += 1
+                elif type == "foul": stats["fouls"][team_key] += 1
+                elif type == "card" and detail == "yellow card": stats["yellow_cards"][team_key] += 1
+                elif type == "card" and detail == "red card": stats["red_cards"][team_key] += 1
             stats["total_shots"]["home"] = stats["shots_on_goal"]["home"] + stats["shots_off_goal"]["home"]
             stats["total_shots"]["away"] = stats["shots_on_goal"]["away"] + stats["shots_off_goal"]["away"]
             return stats
 
-        # Separando eventos por tempo
         first_half_events = [e for e in events if e.get("time", {}).get("elapsed", 999) <= 45]
         second_half_events = [e for e in events if e.get("time", {}).get("elapsed", 0) > 45]
 
-        # Calculando estatísticas para cada período
-        full_game_stats = {
-            "possession": {"home": int(str(get_stat_value(home_id, "Ball Possession")).replace('%', '') or 50), "away": int(str(get_stat_value(away_id, "Ball Possession")).replace('%', '') or 50)},
-            "shots_on_goal": {"home": get_stat_value(home_id, "Shots on Goal"), "away": get_stat_value(away_id, "Shots on Goal")},
-            "total_shots": {"home": get_stat_value(home_id, "Total Shots"), "away": get_stat_value(away_id, "Total Shots")},
-            "corners": {"home": get_stat_value(home_id, "Corner Kicks"), "away": get_stat_value(away_id, "Corner Kicks")},
-            "fouls": {"home": get_stat_value(home_id, "Fouls"), "away": get_stat_value(away_id, "Fouls")},
-            "yellow_cards": {"home": get_stat_value(home_id, "Yellow Cards"), "away": get_stat_value(away_id, "Yellow Cards")},
-            "red_cards": {"home": get_stat_value(home_id, "Red Cards"), "away": get_stat_value(away_id, "Red Cards")},
-        }
-
-        first_half_stats_from_events = calculate_stats_for_period(first_half_events)
-        second_half_stats_from_events = calculate_stats_for_period(second_half_events)
+        full_game_stats = {"possession": {"home": int(str(get_stat_value(home_id, "Ball Possession")).replace('%', '') or 50), "away": int(str(get_stat_value(away_id, "Ball Possession")).replace('%', '') or 50)}, "shots_on_goal": {"home": get_stat_value(home_id, "Shots on Goal"), "away": get_stat_value(away_id, "Shots on Goal")}, "total_shots": {"home": get_stat_value(home_id, "Total Shots"), "away": get_stat_value(away_id, "Total Shots")}, "corners": {"home": get_stat_value(home_id, "Corner Kicks"), "away": get_stat_value(away_id, "Corner Kicks")}, "fouls": {"home": get_stat_value(home_id, "Fouls"), "away": get_stat_value(away_id, "Fouls")}, "yellow_cards": {"home": get_stat_value(home_id, "Yellow Cards"), "away": get_stat_value(away_id, "Yellow Cards")}, "red_cards": {"home": get_stat_value(home_id, "Red Cards"), "away": get_stat_value(away_id, "Red Cards")}}
 
         current_minute = fixture.get("status", {}).get("elapsed", 0)
-        
-        # Estimativa de acréscimos
         estimated_stoppage = {}
-        if 40 <= current_minute <= 55: # Janela para acréscimos do 1T
-            estimated_stoppage["first_half"] = estimate_stoppage_time(events, "1H")
-        if current_minute >= 85: # Janela para acréscimos do 2T
-            estimated_stoppage["second_half"] = estimate_stoppage_time(events, "2H")
+        if 40 <= current_minute < 55: estimated_stoppage["first_half"] = estimate_stoppage_time(events, "1H")
+        if current_minute >= 85: estimated_stoppage["second_half"] = estimate_stoppage_time(events, "2H")
 
         return {
+            "teams": {"home": teams.get("home", {}).get("name"), "away": teams.get("away", {}).get("name")},
             "minute": current_minute,
             "score": f"{goals.get('home', 0)} - {goals.get('away', 0)}",
-            "stats": {
-                "fullGame": full_game_stats,
-                "firstHalf": first_half_stats_from_events,
-                "secondHalf": second_half_stats_from_events
-            },
+            "stats": {"fullGame": full_game_stats, "firstHalf": calculate_stats_for_period(first_half_events), "secondHalf": calculate_stats_for_period(second_half_events)},
             "estimated_stoppage": estimated_stoppage,
             "events": sorted([
                 {"minute": e.get("time", {}).get("elapsed", 0), "type": f"{e.get('type', '')} - {e.get('detail', '')}", "detail": f"{e.get('player', {}).get('name', '')} ({e.get('team', {}).get('name', '')})"}
