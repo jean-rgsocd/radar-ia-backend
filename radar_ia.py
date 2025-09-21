@@ -177,9 +177,29 @@ def stats_aovivo(game_id: int, half: bool = Query(False)):
                 away_id = fixture.get("teams", {}).get("away", {}).get("id")
                 side = "home" if tid == home_id else ("away" if tid == away_id else None)
                 tmp = {}
+
                 for s in (team_stats.get("statistics") or []):
-                    k = (s.get("type") or s.get("name") or "").strip()
-                    tmp[k] = try_int(s.get("value"))
+                    k = (s.get("type") or s.get("name") or "").strip().lower()
+                    v = try_int(s.get("value"))
+
+                    # 🔑 Mapeamento padronizado
+                    if "total shots" in k:
+                        tmp["total_shots"] = v
+                    elif "shots on goal" in k:
+                        tmp["shots_on_goal"] = v
+                    elif "ball possession" in k:
+                        tmp["possession"] = v
+                    elif "corner" in k:
+                        tmp["corners"] = v
+                    elif "foul" in k:
+                        tmp["fouls"] = v
+                    elif "yellow" in k:
+                        tmp["yellow_cards"] = v
+                    elif "red" in k:
+                        tmp["red_cards"] = v
+                    else:
+                        tmp[k] = v
+
                 if side:
                     full_stats[side].update(tmp)
         except Exception as e:
@@ -312,4 +332,5 @@ def events_to_period_stats(events, home_id, away_id):
             # não conta como stat, mas mantém no evento
             pass
     return agg
+
 
