@@ -13,7 +13,7 @@ origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- CONFIGURAÇÃO DA API-SPORTS (SEGUINDO A DOCUMENTAÇÃO OFICIAL) ---
-API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
+API_SPORTS_KEY = "7baa5e00c8ae57d0e6240f790c6840dd"
 API_HOST = "v3.football.api-sports.io"
 API_URL = f"https://{API_HOST}"
 
@@ -54,3 +54,4 @@ def get_live_stats_for_game(game_id: int):
     except requests.RequestException as e:
         print(f"ERRO CRÍTICO no Radar IA ao buscar estatísticas do jogo {game_id}: {e}")
         raise HTTPException(status_code=503, detail="A API de esportes não respondeu para as estatísticas do jogo.")
+
