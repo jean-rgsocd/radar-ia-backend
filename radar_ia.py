@@ -193,7 +193,7 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                 "teams": fixture.get("teams", {}),
                 "score": fixture.get("goals") or {},
                 "status": fixture.get("fixture",{}).get("status"),
-                "statistics": {"full": full_stats},
+                "statistics": "full": full_stats, "firstHalf_derived": period_agg.get("first"), "secondHalf_derived": period_agg.get("second"),
                 "events": processed,
                 "lineups": lineups,
                 "players": players,
@@ -206,3 +206,4 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
