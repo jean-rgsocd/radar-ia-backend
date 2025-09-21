@@ -1,4 +1,3 @@
-// radar.js - versão Half-Time / Full-Time
 document.addEventListener("DOMContentLoaded", () => {
   const RADAR_API = "https://radar-ia-backend.onrender.com";
   const radarSection = document.getElementById("radar-ia-section");
@@ -236,4 +235,5 @@ document.addEventListener("DOMContentLoaded", () => {
   }, { threshold: 0.1 });
   obs.observe(radarSection);
 });
+
 
