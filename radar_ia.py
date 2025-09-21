@@ -2,21 +2,21 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import requests, os, traceback, time
-from typing import List, Dict, Any
 
 app = FastAPI(title="Radar IA")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 API_KEY = os.environ.get("API_SPORTS_KEY", "7baa5e00c8ae57d0e6240f790c6840dd")
 API_CFG = {
-    "football": {"base":"https://v3.football.api-sports.io", "host":"v3.football.api-sports.io"},
-    "nba":      {"base":"https://v2.nba.api-sports.io",      "host":"v2.nba.api-sports.io"},
-    "nfl":      {"base":"https://v2.nfl.api-sports.io",      "host":"v2.nfl.api-sports.io"}
+    "football": {"base": "https://v3.football.api-sports.io", "host": "v3.football.api-sports.io"},
+    "nba":      {"base": "https://v2.nba.api-sports.io",      "host": "v2.nba.api-sports.io"},
+    "nfl":      {"base": "https://v2.nfl.api-sports.io",      "host": "v2.nfl.api-sports.io"}
 }
 
 CACHE_TTL = 8
 _cache = {}
 
+# ---------------- UTILS ----------------
 def _cache_get(key):
     rec = _cache.get(key)
     if not rec: return None
@@ -48,7 +48,7 @@ def _compute_sort_key(ev):
     except: second = 0
     try: extra = int(ev.get("time", {}).get("extra") or 0)
     except: extra = 0
-    return (elapsed + extra)*60 + second
+    return (elapsed + extra) * 60 + second
 
 def _format_display_time(ev):
     t = ev.get("time", {}) or {}
@@ -74,6 +74,47 @@ def classify_event(ev):
     if "shot" in t or "shot" in d: return "Shot"
     return ev.get("type") or ev.get("detail") or "Other"
 
+# ---------------- PERIOD AGGREGATION ----------------
+def events_to_period_stats(events, home_id, away_id):
+    agg = {
+        "first": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
+                  "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
+        "second": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
+                   "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}},
+        "full": {"home":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0},
+                 "away":{"shots":0,"shots_on_target":0,"corners":0,"fouls":0,"yellow":0,"red":0}}
+    }
+    for ev in events:
+        team = ev.get("team") or {}
+        team_id = team.get("id")
+        side = "home" if team_id == home_id else "away"
+        elapsed = ev.get("time", {}).get("elapsed")
+        period = "full"
+        try:
+            if elapsed is not None:
+                e = int(elapsed)
+                period = "first" if e <= 45 else "second"
+        except:
+            period = "full"
+
+        typ = (ev.get("type") or "").lower()
+        detail = (ev.get("detail") or "").lower()
+        if "shot" in typ or "shot" in detail or "goal" in typ or "goal" in detail:
+            agg[period][side]["shots"] += 1; agg["full"][side]["shots"] += 1
+            if "on target" in detail or "goal" in typ or "goal" in detail:
+                agg[period][side]["shots_on_target"] += 1; agg["full"][side]["shots_on_target"] += 1
+        if "corner" in typ or "corner" in detail:
+            agg[period][side]["corners"] += 1; agg["full"][side]["corners"] += 1
+        if "foul" in typ or "foul" in detail:
+            agg[period][side]["fouls"] += 1; agg["full"][side]["fouls"] += 1
+        if "card" in typ or "yellow" in detail or "red" in detail:
+            if "red" in detail:
+                agg[period][side]["red"] += 1; agg["full"][side]["red"] += 1
+            else:
+                agg[period][side]["yellow"] += 1; agg["full"][side]["yellow"] += 1
+    return agg
+
+# ---------------- ENDPOINTS ----------------
 @app.get("/ligas")
 def ligas():
     ck = "radar_ligas_live"
@@ -177,7 +218,12 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
             players_resp = safe_get(f"{base}/fixtures/players", headers, params={"fixture": game_id})
             players = players_resp.get("response") if isinstance(players_resp, dict) else players_resp
 
-            # Estimativa de acréscimos (apenas após 35’ e 80’)
+            # Estatísticas derivadas (1T / 2T)
+            home_id = fixture.get("teams", {}).get("home", {}).get("id")
+            away_id = fixture.get("teams", {}).get("away", {}).get("id")
+            period_agg = events_to_period_stats(events, home_id, away_id)
+
+            # Estimativa de acréscimos
             estimated_extra = None
             try:
                 elapsed = fixture.get("fixture",{}).get("status",{}).get("elapsed")
@@ -193,7 +239,11 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
                 "teams": fixture.get("teams", {}),
                 "score": fixture.get("goals") or {},
                 "status": fixture.get("fixture",{}).get("status"),
-                "statistics": "full": full_stats, "firstHalf_derived": period_agg.get("first"), "secondHalf_derived": period_agg.get("second"),
+                "statistics": {
+                    "full": full_stats,
+                    "firstHalf_derived": period_agg.get("first"),
+                    "secondHalf_derived": period_agg.get("second")
+                },
                 "events": processed,
                 "lineups": lineups,
                 "players": players,
@@ -206,4 +256,3 @@ def stats_aovivo(game_id: int, sport: str = Query("football", enum=["football","
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
