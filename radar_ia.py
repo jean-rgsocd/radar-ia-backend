@@ -1,31 +1,32 @@
 # Filename: radar_ia.py
-# Versão 10.0 - FINAL (Autenticação Direta API-Sports)
+# Versão 11.0 - FINAL (Autenticação Definitiva)
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
-from datetime import datetime
 
-app = FastAPI(title="Radar IA - API Definitiva V10.0")
+app = FastAPI(title="Radar IA - API Definitiva V11.0")
 
 # --- CORS ---
 origins = ["*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- CONFIGURAÇÃO DA API-SPORTS ---
+# --- CONFIGURAÇÃO DA API-SPORTS (SEGUINDO A DOCUMENTAÇÃO) ---
 API_SPORTS_KEY = "7baa5e00c8ae61790c6840dd"
 API_HOST = "v3.football.api-sports.io"
 API_URL = f"https://{API_HOST}"
 
-# Cabeçalhos Corretos
+# Cabeçalhos Corretos e Obrigatórios
 HEADERS = {
     'x-rapidapi-key': API_SPORTS_KEY,
     'x-rapidapi-host': API_HOST
 }
 
-def get_current_season() -> str:
-    return str(datetime.now().year)
+# --- ROTA DE TESTE NA RAIZ ---
+@app.get("/")
+def read_root():
+    return {"status": "Radar IA Backend está online!"}
 
 # --- ENDPOINTS DA API ---
 @app.get("/jogos-aovivo")
